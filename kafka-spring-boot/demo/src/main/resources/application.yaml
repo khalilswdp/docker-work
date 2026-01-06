@@ -1,3 +1,16 @@
+logging:
+  level:
+    root: INFO
+    kafkaspringboot.demo: DEBUG
+    org.springframework.kafka: DEBUG
+    org.apache.kafka: INFO
+    org.apache.kafka.clients.NetworkClient: INFO
+    org.apache.kafka.common.security: INFO
+    # If you want extremely verbose wire/debug (careful: noisy):
+    # org.apache.kafka.clients: DEBUG
+    # org.apache.kafka.common.network: DEBUG
+
+
 event:
   bcef:
     kafka:
@@ -9,7 +22,8 @@ event:
 
       # Optional: influence partition selection & cross-AZ routing
       client-rack: ${BCEF_KAFKA_CLIENT_RACK:} # e.g. "paris-a"
-
+      # org.apache.kafka.clients: DEBUG
+      # org.apache.kafka.common.network: DEBUG
       # ============================================================
       # Security
       # ============================================================
