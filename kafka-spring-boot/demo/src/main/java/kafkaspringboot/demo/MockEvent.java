@@ -1,9 +1,11 @@
 package kafkaspringboot.demo;
 
+import java.time.Instant;
+
 public record MockEvent(
-    String eventId,
-    String type,
-    String ts,
-    String source,
-    int value
+        String id,
+        String type,
+        Instant timestamp,
+        String source,
+        int value
 ) {}
