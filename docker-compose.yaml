@@ -15,6 +15,10 @@ services:
       # image defaults are used. We therefore specify the full required
       # KRaft combined-mode set + single-node replication settings.
       # ============================================================
+
+      # -----------------------------
+      # KRaft combined mode (required set)
+      # -----------------------------
       KAFKA_NODE_ID: "${KAFKA_NODE_ID:-1}"
       KAFKA_PROCESS_ROLES: "broker,controller"
 
@@ -55,24 +59,45 @@ services:
       # SASL/SCRAM (EXTERNAL listener only; INTERNAL stays PLAINTEXT)
       # - We always set these values, but they only matter when:
       #   EXTERNAL_SECURITY_PROTOCOL=SASL_PLAINTEXT and ENABLE_SASL=true
-      #
       # Kafka requires JAAS config per listener+mechanism.
       # For SCRAM brokers, a minimal JAAS stanza is:
       #   ScramLoginModule required;
       # ============================================================
+
+      # -----------------------------
+      # SASL / SCRAM (THIS is the missing piece that caused your crash)
+      #
+      # Kafka expects:
+      #  - listener.name.<listener>.sasl.enabled.mechanisms
+      #  - listener.name.<listener>.<mechanism>.sasl.jaas.config
+      #
+      # Mechanism SCRAM-SHA-512 becomes SCRAM_SHA_512 in env-var form.
+      # -----------------------------
       KAFKA_SASL_ENABLED_MECHANISMS: "${SASL_MECHANISM:-SCRAM-SHA-512}"
-      KAFKA_LISTENER_NAME_${EXTERNAL_LISTENER_NAME:-EXTERNAL}_${SASL_MECHANISM:-SCRAM-SHA-512}_SASL_JAAS_CONFIG: "org.apache.kafka.common.security.scram.ScramLoginModule required;"
 
       # ============================================================
       # Authorizer / ACLs (KRaft authorizer)
       # Enable with ENABLE_AUTHORIZER=true (init.sh applies ACLs too)
       # ============================================================
+      # Values are safe defaults; unused keys are ignored.
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: "${SASL_MECHANISM:-SCRAM-SHA-512}"
+      KAFKA_LISTENER_NAME_OUTSIDE_SASL_ENABLED_MECHANISMS: "${SASL_MECHANISM:-SCRAM-SHA-512}"
+
+      # -----------------------------
+      # Authorizer / ACLs (KRaft)
+      # NOTE: we always set it; if you want it OFF, set ENABLE_AUTHORIZER=false
+      # and ALLOW_EVERYONE_IF_NO_ACL_FOUND=true and remove ACL usage.
+      # -----------------------------
       KAFKA_AUTHORIZER_CLASS_NAME: "org.apache.kafka.metadata.authorizer.StandardAuthorizer"
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "${ALLOW_EVERYONE_IF_NO_ACL_FOUND:-false}"
       KAFKA_SUPER_USERS: "${SUPER_USERS:-User:ANONYMOUS;User:kafka_app}"
 
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf"
+
     volumes:
       - kafka_data:/var/lib/kafka/data
+      - ./kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
+
 
     healthcheck:
       # Probe INTERNAL listener from inside container (stable)
@@ -128,6 +153,7 @@ services:
     environment:
       # UI connects over INTERNAL PLAINTEXT by default (simple + reliable)
       KAFKA_CLUSTERS_0_NAME: "${KAFKA_CLUSTER_NAME:-local}"
+      # UI uses INTERNAL PLAINTEXT (simple + reliable)
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "${BOOTSTRAP_INTERNAL:-kafka:19092}"
 
       # UI web login (separate from Kafka auth)

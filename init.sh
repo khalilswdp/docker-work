@@ -4,19 +4,18 @@ set -euo pipefail
 BOOTSTRAP="${BOOTSTRAP:-kafka:19092}"
 
 ENABLE_SASL="${ENABLE_SASL:-true}"
-ENABLE_AUTHORIZER="${ENABLE_AUTHORIZER:-true}"
-APPLY_ACLS="${APPLY_ACLS:-true}"
-
 SASL_MECHANISM="${SASL_MECHANISM:-SCRAM-SHA-512}"
 APP_USER="${APP_USER:-kafka_app}"
 APP_PASS="${APP_PASS:-kafka_app_password}"
+
+ENABLE_AUTHORIZER="${ENABLE_AUTHORIZER:-true}"
+APPLY_ACLS="${APPLY_ACLS:-true}"
+APP_GROUP="${APP_GROUP:-kafka_app_group}"
 
 TOPIC_1="${TOPIC_1:-topic_one}"
 TOPIC_2="${TOPIC_2:-topic_two}"
 TOPIC_PARTITIONS="${TOPIC_PARTITIONS:-3}"
 TOPIC_RF="${TOPIC_RF:-1}"
-
-APP_GROUP="${APP_GROUP:-kafka_app_group}"
 
 KAFKA_BIN="/opt/kafka/bin"
 TOPICS="${KAFKA_BIN}/kafka-topics.sh"
@@ -32,11 +31,8 @@ for i in {1..60}; do
   sleep 2
 done
 
-# ------------------------------------------------------------
-# SCRAM user: create/update deterministically
-# ------------------------------------------------------------
 if [[ "${ENABLE_SASL}" == "true" ]]; then
-  echo "Ensuring SCRAM user exists: ${APP_USER} (${SASL_MECHANISM})"
+  echo "Ensuring SCRAM user exists/updated: ${APP_USER} (${SASL_MECHANISM})"
   "${CONFIGS}" --bootstrap-server "${BOOTSTRAP}" \
     --alter \
     --add-config "${SASL_MECHANISM}=[password=${APP_PASS}]" \
@@ -46,8 +42,39 @@ else
   echo "ENABLE_SASL=false -> skipping user creation"
 fi
 
-# ------------------------------------------------------------
-# Topics
-# ------------------------------------------------------------
 echo "Creating topics if missing: ${TOPIC_1}, ${TOPIC_2}"
-"${TOPICS}"
+"${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
+  --create --if-not-exists --topic "${TOPIC_1}" \
+  --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
+
+"${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
+  --create --if-not-exists --topic "${TOPIC_2}" \
+  --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
+
+echo "Topics:"
+"${TOPICS}" --bootstrap-server "${BOOTSTRAP}" --list
+
+if [[ "${ENABLE_AUTHORIZER}" == "true" && "${APPLY_ACLS}" == "true" ]]; then
+  echo "Applying ACLs for User:${APP_USER}..."
+
+  "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
+    --add --allow-principal "User:${APP_USER}" \
+    --operation Read --operation Write --operation Describe \
+    --topic "${TOPIC_1}"
+
+  "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
+    --add --allow-principal "User:${APP_USER}" \
+    --operation Read --operation Write --operation Describe \
+    --topic "${TOPIC_2}"
+
+  "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
+    --add --allow-principal "User:${APP_USER}" \
+    --operation Read --operation Describe \
+    --group "${APP_GROUP}"
+
+  echo "ACLs applied."
+else
+  echo "ACLs skipped (ENABLE_AUTHORIZER=${ENABLE_AUTHORIZER}, APPLY_ACLS=${APPLY_ACLS})"
+fi
+
+echo "Init complete."
