@@ -23,7 +23,7 @@ CONFIGS="${KAFKA_BIN}/kafka-configs.sh"
 ACLS="${KAFKA_BIN}/kafka-acls.sh"
 
 echo "Waiting for Kafka at ${BOOTSTRAP}..."
-for i in {1..60}; do
+for _ in {1..60}; do
   if "${TOPICS}" --bootstrap-server "${BOOTSTRAP}" --list >/dev/null 2>&1; then
     echo "Kafka reachable."
     break

@@ -1,0 +1,19 @@
+app:
+  topic: ${APP_TOPIC:topic_one}
+  interval-ms: ${APP_INTERVAL_MS:1000}
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+
+    properties:
+      security.protocol: SASL_PLAINTEXT
+      sasl.mechanism: SCRAM-SHA-512
+
+      # IMPORTANT: keep this as a single-quoted one-liner to avoid YAML whitespace/newline issues.
+      sasl.jaas.config: '${KAFKA_JAAS:org.apache.kafka.common.security.scram.ScramLoginModule required username="kafka_app" password="kafka_app_password";}'
+
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
