@@ -36,6 +36,7 @@ services:
       context: ./app
       secrets:
         - maven_settings
+        - jdk_cacerts
     container_name: spring-app
     depends_on:
       vault-init:
@@ -53,3 +54,8 @@ services:
 secrets:
   maven_settings:
     file: ~/.m2/settings.xml
+  jdk_cacerts:
+    # IMPORTANT: point this to YOUR LOCAL JDK's cacerts file
+    # Example:
+    # file: /path/to/your/local/jdk/lib/security/cacerts
+    file: $JAVA_HOME/lib/security/cacerts
