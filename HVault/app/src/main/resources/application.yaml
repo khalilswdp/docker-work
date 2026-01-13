@@ -16,6 +16,7 @@ spring:
       uri: http://localhost:8200
       authentication: TOKEN
       token: root
+      fail-fast: true
 
 
 logging:
