@@ -32,7 +32,10 @@ services:
     restart: "no"
 
   app:
-    build: ./app
+    build:
+      context: ./app
+      secrets:
+        - maven_settings
     container_name: spring-app
     depends_on:
       vault-init:
@@ -46,3 +49,7 @@ services:
       SPRING_CLOUD_VAULT_KV_ENABLED: "true"
       SPRING_CLOUD_VAULT_KV_BACKEND: "secret"
       SPRING_CLOUD_VAULT_KV_DEFAULT_CONTEXT: "myapp"
+
+secrets:
+  maven_settings:
+    file: ~/.m2/settings.xml
