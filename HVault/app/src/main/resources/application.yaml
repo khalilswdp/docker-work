@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: demo
+  config:
+    # This is important for Spring Boot 3.x to load Vault as a config source
+    import: "vault://"
+
+  cloud:
+    vault:
+      scheme: http
+      # uri + token are passed via env vars in docker-compose, but you can also set them here
+      kv:
+        enabled: true
+        backend: secret
+        default-context: myapp
+      uri: http://localhost:8200
+      authentication: TOKEN
+      token: root
+
+
+logging:
+  level:
+    org.springframework.cloud.vault: INFO

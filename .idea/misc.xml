@@ -5,6 +5,7 @@
     <option name="originalFiles">
       <list>
         <option value="$PROJECT_DIR$/kafka-spring-boot/demo/pom.xml" />
+        <option value="$PROJECT_DIR$/HVault/app/pom.xml" />
       </list>
     </option>
   </component>
