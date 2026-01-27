@@ -1,0 +1,73 @@
+@startuml
+skinparam packageStyle rectangle
+skinparam classAttributeIconSize 0
+
+package "Core" {
+  class GilBaseException
+  abstract class GilEngineException
+
+  class FlowConfigException
+  class FlowValidationException
+  class StepExecutionException
+  class MappingException
+
+  class GilCodedException
+  enum GilErrorCode
+
+  GilBaseException <|-- GilEngineException
+  GilEngineException <|-- FlowConfigException
+  GilEngineException <|-- FlowValidationException
+  GilEngineException <|-- StepExecutionException
+  GilEngineException <|-- MappingException
+
+  GilBaseException <|-- GilCodedException
+  GilCodedException --> GilErrorCode
+}
+
+package "API Common" {
+  enum ApiError
+
+  class ClientException
+  class BadRequestException
+  class UnauthorizedException
+  class ForbiddenException
+  class ConflictException
+  class NotFoundException
+
+  class ServerException
+
+  GilBaseException <|-- ClientException
+  GilBaseException <|-- ServerException
+
+  ClientException <|-- BadRequestException
+  ClientException <|-- UnauthorizedException
+  ClientException <|-- ForbiddenException
+  ClientException <|-- ConflictException
+  ClientException <|-- NotFoundException
+}
+
+package "Identity" {
+  class IdentityException
+  class TokenVerificationException
+  class TokenExpiredException
+  class TokenDecodeException
+  class InvalidSignatureException
+  class InvalidClaimException
+  class JsonWebKeyException
+  class CodeExchangeException
+  class InvalidConfigurationException
+
+  GilBaseException <|-- IdentityException
+
+  IdentityException <|-- TokenVerificationException
+  TokenVerificationException <|-- TokenExpiredException
+  TokenVerificationException <|-- TokenDecodeException
+  TokenVerificationException <|-- InvalidSignatureException
+  TokenVerificationException <|-- InvalidClaimException
+  TokenVerificationException <|-- JsonWebKeyException
+
+  IdentityException <|-- CodeExchangeException
+  IdentityException <|-- InvalidConfigurationException
+}
+
+@enduml
