@@ -114,7 +114,7 @@ public class ExceptionHandlingAdvice {
     @ExceptionHandler
     public void returnInternalServerError(HttpServletRequest request, ServerException e) {
         ExceptionHandlingAdvice.setErrorInObservationContext(request, e);
-        log.error("Request failed unexpectedly", (Throwable)e);
+        log.error("Request failed unexpectedly", e);
     }
 
     @ResponseStatus(value=HttpStatus.INTERNAL_SERVER_ERROR)

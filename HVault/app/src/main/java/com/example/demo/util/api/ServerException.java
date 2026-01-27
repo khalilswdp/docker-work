@@ -1,7 +1,9 @@
 package com.example.demo.util.api;
 
+import com.example.demo.core.GilBaseException;
+
 public class ServerException
-extends RuntimeException {
+extends GilBaseException {
     public ServerException(Throwable cause) {
         super(cause);
     }

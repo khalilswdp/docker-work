@@ -1,6 +1,8 @@
 package com.example.demo.exception.identity.sdk.exception;
 
-public class IdentityException extends RuntimeException {
+import com.example.demo.core.GilBaseException;
+
+public class IdentityException extends GilBaseException {
   public IdentityException(final String message) {
     super(message);
   }

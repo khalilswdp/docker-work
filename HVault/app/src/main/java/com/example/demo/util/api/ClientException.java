@@ -1,11 +1,13 @@
 package com.example.demo.util.api;
 
+import com.example.demo.core.GilBaseException;
+
 public class ClientException
-extends RuntimeException {
+extends GilBaseException {
     private final ApiError apiError;
 
     protected ClientException() {
-        this((ApiError)null);
+        this(null);
     }
 
     protected ClientException(ApiError apiError) {

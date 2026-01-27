@@ -1,5 +1,7 @@
 package com.example.demo;
 
+import com.example.demo.core.GilCodedException;
+import com.example.demo.core.GilErrorCode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -20,6 +22,12 @@ public class DemoApplication {
       @Value("${ssh.host:NOT_FOUND}") String sshHost,
       @Value("${ssh.port:NOT_FOUND}") String sshPort
   ) {
+
+    // exemple d'usage d'exception:
+
+    if (Math.random() < 1) {
+      throw new GilCodedException(GilErrorCode.CORE_CONFIG_INVALID, "Missing field: flowId");
+    }
     return args -> {
       System.out.println("=== Values read from Vault ===");
       System.out.println("db.username = " + dbUser);
