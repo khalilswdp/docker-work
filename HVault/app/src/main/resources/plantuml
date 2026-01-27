@@ -3,25 +3,49 @@ skinparam packageStyle rectangle
 skinparam classAttributeIconSize 0
 
 package "Core" {
+
+  ' ===== Shared foundation inside Core =====
   class GilBaseException
   abstract class GilEngineException
-
-  class FlowConfigException
-  class FlowValidationException
-  class StepExecutionException
-  class MappingException
 
   class GilCodedException
   enum GilErrorCode
 
   GilBaseException <|-- GilEngineException
-  GilEngineException <|-- FlowConfigException
-  GilEngineException <|-- FlowValidationException
-  GilEngineException <|-- StepExecutionException
-  GilEngineException <|-- MappingException
-
   GilBaseException <|-- GilCodedException
   GilCodedException --> GilErrorCode
+
+  ' ===== Configuration taxonomy =====
+  package "Configuration Taxonomy" {
+    abstract class GilConfigurationException
+
+    class ConfigurationMissingException
+    class ConfigurationMalformedException
+    class ConfigurationConstraintViolationException
+    class ConfigurationReferenceNotFoundException
+
+    GilEngineException <|-- GilConfigurationException
+    GilConfigurationException <|-- ConfigurationMissingException
+    GilConfigurationException <|-- ConfigurationMalformedException
+    GilConfigurationException <|-- ConfigurationConstraintViolationException
+    GilConfigurationException <|-- ConfigurationReferenceNotFoundException
+  }
+
+  ' ===== Flow & Data Processing taxonomy =====
+  package "Flow & Data Taxonomy" {
+    abstract class GilFlowException
+
+    class InvalidPayloadException
+    class FlowIdResolutionException
+    class FieldAliasingException
+    class TransformationExecutionException
+
+    GilEngineException <|-- GilFlowException
+    GilFlowException <|-- InvalidPayloadException
+    GilFlowException <|-- FlowIdResolutionException
+    GilFlowException <|-- FieldAliasingException
+    GilFlowException <|-- TransformationExecutionException
+  }
 }
 
 package "API Common" {

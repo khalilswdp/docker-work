@@ -1,7 +1,6 @@
 package com.example.demo;
 
-import com.example.demo.core.GilCodedException;
-import com.example.demo.core.GilErrorCode;
+import com.example.demo.core.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -24,10 +23,17 @@ public class DemoApplication {
   ) {
 
     // exemple d'usage d'exception:
-
-    if (Math.random() < 1) {
+    //
+    /*
+    if (false) {
+      throw new ConfigurationConstraintViolationException("topicName does not match pattern: [a-z0-9._-]+");
+      throw new InvalidPayloadException("Missing required field: paymentId");
+      throw new FlowIdResolutionException("No flowId matches payload bank=bnp, direction=OUT");
       throw new GilCodedException(GilErrorCode.CORE_CONFIG_INVALID, "Missing field: flowId");
     }
+    */
+
+
     return args -> {
       System.out.println("=== Values read from Vault ===");
       System.out.println("db.username = " + dbUser);
