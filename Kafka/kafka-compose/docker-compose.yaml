@@ -94,6 +94,8 @@ services:
 
       KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf"
 
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: "http://${SCHEMA_REGISTRY_HOSTNAME:-schema-registry}:8081"
+
     volumes:
       - kafka_data:/var/lib/kafka/data
       - ./kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
@@ -160,6 +162,51 @@ services:
       AUTH_TYPE: "${KAFKA_UI_AUTH_TYPE:-DISABLED}"
       SPRING_SECURITY_USER_NAME: "${KAFKA_UI_USER:-admin}"
       SPRING_SECURITY_USER_PASSWORD: "${KAFKA_UI_PASSWORD:-admin123}"
+
+  schema-registry:
+    image: "${REGISTRY_PREFIX:-docker.io}/${SCHEMA_REGISTRY_IMAGE:-confluentinc/cp-schema-registry}:${SCHEMA_REGISTRY_TAG:-latest}"
+    container_name: "${SCHEMA_REGISTRY_CONTAINER_NAME:-schema-registry-local}"
+    hostname: "${SCHEMA_REGISTRY_HOSTNAME:-schema-registry}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    ports:
+      - "${SCHEMA_REGISTRY_PORT:-8081}:8081"
+
+    environment:
+      # Connect to Kafka over INTERNAL PLAINTEXT
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "${BOOTSTRAP_INTERNAL:-kafka:19092}"
+
+      # Registry HTTP API
+      SCHEMA_REGISTRY_HOST_NAME: "${SCHEMA_REGISTRY_HOSTNAME:-schema-registry}"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+
+      # Optional: keep things explicit
+      SCHEMA_REGISTRY_LOG4J_ROOT_LOGLEVEL: "${SCHEMA_REGISTRY_LOG_LEVEL:-INFO}"
+
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fsS http://127.0.0.1:8081/subjects >/dev/null || exit 1" ]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  schema-registry-ui:
+    image: "${REGISTRY_PREFIX:-docker.io}/${SCHEMA_REGISTRY_UI_IMAGE:-landoop/schema-registry-ui}:${SCHEMA_REGISTRY_UI_TAG:-latest}"
+    container_name: "${SCHEMA_REGISTRY_UI_CONTAINER_NAME:-schema-registry-ui-local}"
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+
+    ports:
+      - "${SCHEMA_REGISTRY_UI_PORT:-8000}:8000"
+
+    environment:
+      # Point the UI to your registry inside the docker network
+      SCHEMAREGISTRY_URL: "http://${SCHEMA_REGISTRY_HOSTNAME:-schema-registry}:8081"
+
+      # Optional but commonly needed for browser/API calls
+      PROXY: "true"
 
 volumes:
   kafka_data:
