@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/Kafka-UI.iml" filepath="$PROJECT_DIR$/Kafka-UI.iml" />
+      <module fileurl="file://$PROJECT_DIR$/Kafka/kafka-avro-json/kafka-avro-json.iml" filepath="$PROJECT_DIR$/Kafka/kafka-avro-json/kafka-avro-json.iml" />
     </modules>
   </component>
 </project>

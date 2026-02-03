@@ -132,6 +132,8 @@ services:
       # Topics
       TOPIC_1: "${TOPIC_1:-topic_one}"
       TOPIC_2: "${TOPIC_2:-topic_two}"
+      TOPIC_AVRO: "${TOPIC_AVRO:-topic_avro}"
+      TOPIC_JSON: "${TOPIC_JSON:-topic_json}"
       TOPIC_PARTITIONS: "${TOPIC_PARTITIONS:-3}"
       TOPIC_RF: "${TOPIC_RF:-1}"
 

@@ -1,0 +1,37 @@
+server:
+  port: 8085
+
+app:
+  kafka:
+    bootstrapServers: "localhost:29092"
+    schemaRegistryUrl: "http://localhost:8081"
+    username: "kafka_app"
+    password: "kafka_app_password"
+    saslMechanism: "SCRAM-SHA-512"
+
+    legacyTopics:
+      - topic_one
+      - topic_two
+    jsonTopics:
+      - topic_json
+    avroTopics:
+      - topic_avro
+
+spring:
+  kafka:
+    client-id: kafka-mix-app
+    properties:
+      # Client security (matches your docker kafka EXTERNAL listener)
+      security.protocol: SASL_PLAINTEXT
+      sasl.mechanism: ${app.kafka.saslMechanism}
+      sasl.jaas.config: >
+        org.apache.kafka.common.security.scram.ScramLoginModule required
+        username="${app.kafka.username}"
+        password="${app.kafka.password}";
+
+      # Schema Registry
+      schema.registry.url: ${app.kafka.schemaRegistryUrl}
+
+      # Useful defaults
+      auto.register.schemas: true
+      specific.avro.reader: true

@@ -14,6 +14,9 @@ APP_GROUP="${APP_GROUP:-kafka_app_group}"
 
 TOPIC_1="${TOPIC_1:-topic_one}"
 TOPIC_2="${TOPIC_2:-topic_two}"
+TOPIC_AVRO="${TOPIC_AVRO:-topic_avro}"
+TOPIC_JSON="${TOPIC_JSON:-topic_json}"
+
 TOPIC_PARTITIONS="${TOPIC_PARTITIONS:-3}"
 TOPIC_RF="${TOPIC_RF:-1}"
 
@@ -42,13 +45,21 @@ else
   echo "ENABLE_SASL=false -> skipping user creation"
 fi
 
-echo "Creating topics if missing: ${TOPIC_1}, ${TOPIC_2}"
+  echo "Creating topics if missing: ${TOPIC_1}, ${TOPIC_2}, ${TOPIC_AVRO}, ${TOPIC_JSON}"
 "${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
   --create --if-not-exists --topic "${TOPIC_1}" \
   --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
 
 "${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
   --create --if-not-exists --topic "${TOPIC_2}" \
+  --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
+
+"${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
+  --create --if-not-exists --topic "${TOPIC_AVRO}" \
+  --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
+
+"${TOPICS}" --bootstrap-server "${BOOTSTRAP}" \
+  --create --if-not-exists --topic "${TOPIC_JSON}" \
   --partitions "${TOPIC_PARTITIONS}" --replication-factor "${TOPIC_RF}"
 
 echo "Topics:"
@@ -66,6 +77,16 @@ if [[ "${ENABLE_AUTHORIZER}" == "true" && "${APPLY_ACLS}" == "true" ]]; then
     --add --allow-principal "User:${APP_USER}" \
     --operation Read --operation Write --operation Describe \
     --topic "${TOPIC_2}"
+
+  "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
+    --add --allow-principal "User:${APP_USER}" \
+    --operation Read --operation Write --operation Describe \
+    --topic "${TOPIC_AVRO}"
+
+  "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
+    --add --allow-principal "User:${APP_USER}" \
+    --operation Read --operation Write --operation Describe \
+    --topic "${TOPIC_JSON}"
 
   "${ACLS}" --bootstrap-server "${BOOTSTRAP}" \
     --add --allow-principal "User:${APP_USER}" \
