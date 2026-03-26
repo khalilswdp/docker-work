@@ -1,24 +1,48 @@
-Here’s a JUnit 5 + Mockito unit test example for that class.
+Here’s a solid JUnit 5 + Mockito test suite that targets 100% line/branch coverage for your ApiFlowProcessorStrategyImpl.
 
-Your snippet has several typos/inconsistencies, so I wrote the test against the intended behavior:
+A small note first: JUnit has moved on beyond the JUnit 5.x line, but JUnit Jupiter remains the programming model you use for “JUnit 5-style” tests. Mockito is still the standard choice for this style of unit testing.  ￼
 
-* request transformation is applied when configured
-* flow is forwarded
-* response transformation is applied when configured
-* unauthorized flow throws `GilCoreException`
-* when no transformations are configured, only forwarding happens
+Test strategy
 
-```java
+To fully cover your class, you need to exercise:
+•	authorization failure when authorizedCodeAp is null
+•	authorization failure when authorizedCodeAp is empty
+•	authorization success with "all"
+•	IN authorization success
+•	IN authorization failure
+•	OUT authorization success
+•	OUT authorization failure because issuer is not apigee
+•	OUT authorization failure because subject is not authorized
+•	request transformation present / absent
+•	response transformation present / absent
+•	happy-path call order:
+1.	auth
+2.	request transformation
+3.	forward
+4.	response transformation
+
+⸻
+
+Example test class
+
+This version assumes your domain objects expose the getters used by production code, and that TokenContext has issuer() and subject() as shown in your source.
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.Collections;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
@@ -27,6 +51,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class ApiFlowProcessorStrategyImplTest {
+
+    private static final String APIGEE = "apigee";
+    private static final String ALL = "all";
 
     @Mock
     private ApplyTransformationPort applyTransformationPort;
@@ -41,16 +68,16 @@ class ApiFlowProcessorStrategyImplTest {
     private ApiFlowConfiguration configuration;
 
     @Mock
-    private ApplyflowconfigurationRequest requestTransformations;
-
-    @Mock
-    private ApiFlowConfigurationResponse responseTransformations;
-
-    @Mock
     private ApiFlowRequest request;
 
     @Mock
     private ApiFlowResponse response;
+
+    @Mock
+    private ApiFlowConfigurationRequest requestConfig;
+
+    @Mock
+    private ApiFlowConfigurationResponse responseConfig;
 
     @Mock
     private TokenContext tokenContext;
@@ -60,474 +87,313 @@ class ApiFlowProcessorStrategyImplTest {
     @BeforeEach
     void setUp() {
         strategy = new ApiFlowProcessorStrategyImpl(applyTransformationPort);
-    }
 
-    @Test
-    void should_apply_request_transformation_forward_flow_and_apply_response_transformation() {
         when(flow.getConfiguration()).thenReturn(configuration);
-        when(flow.getflowConfiguration()).thenReturn(configuration); // if this exists in your code
-        when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-        when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-
         when(flow.getRequest()).thenReturn(request);
         when(flow.getResponse()).thenReturn(response);
-
-        when(configuration.getRequestTransformations()).thenReturn(requestTransformations);
-        when(requestTransformations.getAlias()).thenReturn("request-alias");
-
-        when(configuration.getResponseTransformations()).thenReturn(responseTransformations);
-        when(responseTransformations.getAlias()).thenReturn("response-alias");
-
-        strategy.doProcessFlow(flow, forwardFlowPort);
-
-        InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-
-        inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
-        inOrder.verify(forwardFlowPort).forwardFlow(flow);
-        inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
-    }
-
-    @Test
-    void should_forward_only_when_no_transformations_are_configured() {
-        when(flow.getConfiguration()).thenReturn(configuration);
-        when(flow.getflowConfiguration()).thenReturn(configuration);
-        when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-        when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-
-        when(configuration.getRequestTransformations()).thenReturn(null);
-        when(configuration.getResponseTransformations()).thenReturn(null);
-
-        strategy.doProcessFlow(flow, forwardFlowPort);
-
-        verify(forwardFlowPort).forwardFlow(flow);
-        verify(applyTransformationPort, never()).applyTransformation(any());
-    }
-
-    @Test
-    void should_throw_exception_when_flow_is_not_authorized_for_in_direction() {
-        when(flow.getConfiguration()).thenReturn(configuration);
-        when(flow.getflowConfiguration()).thenReturn(configuration);
-        when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-
-        when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-        when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-source"));
-
-        when(flow.getRequest()).thenReturn(request);
         when(request.getTokenContext()).thenReturn(tokenContext);
-        when(tokenContext.issuer()).thenReturn("unknown-source");
-        when(tokenContext.subject()).thenReturn("some-subject");
-
-        assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
-
-        verify(forwardFlowPort, never()).forwardFlow(any());
-        verify(applyTransformationPort, never()).applyTransformation(any());
     }
 
-    @Test
-    void should_not_throw_when_authorized_for_in_direction() {
-        when(flow.getConfiguration()).thenReturn(configuration);
-        when(flow.getflowConfiguration()).thenReturn(configuration);
-        when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+    @Nested
+    @DisplayName("Authorization")
+    class AuthorizationTests {
 
-        when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-        when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-source"));
+        @Test
+        @DisplayName("should throw when authorized sources are null")
+        void shouldThrowWhenAuthorizedSourcesAreNull() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(null);
+            when(tokenContext.issuer()).thenReturn("issuer-x");
+            when(tokenContext.subject()).thenReturn("subject-x");
 
-        when(flow.getRequest()).thenReturn(request);
-        when(request.getTokenContext()).thenReturn(tokenContext);
-        when(tokenContext.issuer()).thenReturn("trusted-source");
+            GilCoreException ex = assertThrows(
+                    GilCoreException.class,
+                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+            );
 
-        when(configuration.getRequestTransformations()).thenReturn(null);
-        when(configuration.getResponseTransformations()).thenReturn(null);
+            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, ex.getErrorCode());
+            assertEquals(
+                    "La liste de sources dans la configuration du flow et la source du flow (issuer-x, subject-x) ne correspondent pas.",
+                    ex.getMessage()
+            );
 
-        strategy.doProcessFlow(flow, forwardFlowPort);
+            verify(forwardFlowPort, never()).forwardFlow(any());
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
 
-        verify(forwardFlowPort).forwardFlow(flow);
+        @Test
+        @DisplayName("should throw when authorized sources are empty")
+        void shouldThrowWhenAuthorizedSourcesAreEmpty() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(Collections.emptyList());
+            when(tokenContext.issuer()).thenReturn("issuer-x");
+            when(tokenContext.subject()).thenReturn("subject-x");
+
+            GilCoreException ex = assertThrows(
+                    GilCoreException.class,
+                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+            );
+
+            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, ex.getErrorCode());
+            assertEquals(
+                    "La liste de sources dans la configuration du flow et la source du flow (issuer-x, subject-x) ne correspondent pas.",
+                    ex.getMessage()
+            );
+
+            verify(forwardFlowPort, never()).forwardFlow(any());
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+
+        @Test
+        @DisplayName("should allow flow when authorized sources contain all")
+        void shouldAllowWhenAuthorizedSourcesContainAll() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of(ALL));
+            when(configuration.getRequestTransformations()).thenReturn(null);
+            when(configuration.getResponseTransformations()).thenReturn(null);
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(forwardFlowPort).forwardFlow(flow);
+            verify(applyTransformationPort, never()).applyTransformation(any());
+            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
+        }
+
+        @Test
+        @DisplayName("should authorize IN flow when issuer is allowed")
+        void shouldAuthorizeInWhenIssuerMatches() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-issuer"));
+            when(configuration.getRequestTransformations()).thenReturn(null);
+            when(configuration.getResponseTransformations()).thenReturn(null);
+            when(tokenContext.issuer()).thenReturn("trusted-issuer");
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(forwardFlowPort).forwardFlow(flow);
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+
+        @Test
+        @DisplayName("should reject IN flow when issuer is not allowed")
+        void shouldRejectInWhenIssuerDoesNotMatch() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-issuer"));
+            when(tokenContext.issuer()).thenReturn("other-issuer");
+            when(tokenContext.subject()).thenReturn("subject-x");
+
+            GilCoreException ex = assertThrows(
+                    GilCoreException.class,
+                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+            );
+
+            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, ex.getErrorCode());
+            assertEquals(
+                    "La liste de sources dans la configuration du flow et la source du flow (other-issuer, subject-x) ne correspondent pas.",
+                    ex.getMessage()
+            );
+
+            verify(forwardFlowPort, never()).forwardFlow(any());
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+
+        @Test
+        @DisplayName("should authorize OUT flow when issuer is apigee and subject is allowed")
+        void shouldAuthorizeOutWhenApigeeAndSubjectMatches() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.OUT);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("allowed-subject"));
+            when(configuration.getRequestTransformations()).thenReturn(null);
+            when(configuration.getResponseTransformations()).thenReturn(null);
+            when(tokenContext.issuer()).thenReturn(APIGEE);
+            when(tokenContext.subject()).thenReturn("allowed-subject");
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(forwardFlowPort).forwardFlow(flow);
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+
+        @Test
+        @DisplayName("should reject OUT flow when issuer is not apigee")
+        void shouldRejectOutWhenIssuerIsNotApigee() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.OUT);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("allowed-subject"));
+            when(tokenContext.issuer()).thenReturn("other-gateway");
+            when(tokenContext.subject()).thenReturn("allowed-subject");
+
+            GilCoreException ex = assertThrows(
+                    GilCoreException.class,
+                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+            );
+
+            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, ex.getErrorCode());
+            assertEquals(
+                    "La liste de sources dans la configuration du flow et la source du flow (other-gateway, allowed-subject) ne correspondent pas.",
+                    ex.getMessage()
+            );
+
+            verify(forwardFlowPort, never()).forwardFlow(any());
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+
+        @Test
+        @DisplayName("should reject OUT flow when subject is not allowed")
+        void shouldRejectOutWhenSubjectDoesNotMatch() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.OUT);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("allowed-subject"));
+            when(tokenContext.issuer()).thenReturn(APIGEE);
+            when(tokenContext.subject()).thenReturn("forbidden-subject");
+
+            GilCoreException ex = assertThrows(
+                    GilCoreException.class,
+                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+            );
+
+            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, ex.getErrorCode());
+            assertEquals(
+                    "La liste de sources dans la configuration du flow et la source du flow (apigee, forbidden-subject) ne correspondent pas.",
+                    ex.getMessage()
+            );
+
+            verify(forwardFlowPort, never()).forwardFlow(any());
+            verify(applyTransformationPort, never()).applyTransformation(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("Transformations")
+    class TransformationTests {
+
+        @Test
+        @DisplayName("should apply request and response transformations in order")
+        void shouldApplyRequestAndResponseTransformationsInOrder() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-issuer"));
+            when(tokenContext.issuer()).thenReturn("trusted-issuer");
+
+            when(configuration.getRequestTransformations()).thenReturn(requestConfig);
+            when(requestConfig.getAlias()).thenReturn("request-alias");
+
+            when(configuration.getResponseTransformations()).thenReturn(responseConfig);
+            when(responseConfig.getAlias()).thenReturn("response-alias");
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
+            inOrder.verify(forwardFlowPort).forwardFlow(flow);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
+
+            verifyNoMoreInteractions(forwardFlowPort, applyTransformationPort);
+        }
+
+        @Test
+        @DisplayName("should skip request transformation when request config is null")
+        void shouldSkipRequestTransformationWhenRequestConfigIsNull() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-issuer"));
+            when(tokenContext.issuer()).thenReturn("trusted-issuer");
+
+            when(configuration.getRequestTransformations()).thenReturn(null);
+            when(configuration.getResponseTransformations()).thenReturn(responseConfig);
+            when(responseConfig.getAlias()).thenReturn("response-alias");
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(forwardFlowPort).forwardFlow(flow);
+            verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
+            verify(applyTransformationPort, never()).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
+        }
+
+        @Test
+        @DisplayName("should skip response transformation when response config is null")
+        void shouldSkipResponseTransformationWhenResponseConfigIsNull() {
+            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
+            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("trusted-issuer"));
+            when(tokenContext.issuer()).thenReturn("trusted-issuer");
+
+            when(configuration.getRequestTransformations()).thenReturn(requestConfig);
+            when(requestConfig.getAlias()).thenReturn("request-alias");
+            when(configuration.getResponseTransformations()).thenReturn(null);
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
+            verify(forwardFlowPort).forwardFlow(flow);
+            verify(applyTransformationPort, never()).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
+        }
     }
 }
-```
-
-A likely implementation constructor for this test to compile:
-
-```java
-public class ApiFlowProcessorStrategyImpl implements FlowProcessorStrategy<ApiFlow> {
-
-    private final ApplyTransformationPort applyTransformationPort;
-
-    public ApiFlowProcessorStrategyImpl(ApplyTransformationPort applyTransformationPort) {
-        this.applyTransformationPort = applyTransformationPort;
-    }
-
-    // ...
-}
-```
-
-A few issues in your class snippet will need fixing before the test can compile:
-
-* `flow.getflowConfiguration()` vs `flow.getConfiguration()`
-* `ApplyflowconfigurationRequest` naming
-* `ApiFlowConfigurationResponse` naming consistency
-* `apiFlowConfiguraiton` typo
-* `getAuthorizedCodeAp()` maybe should be `getAuthorizedCodeApp()` or similar
-* `flow.getRequest().getTokenContext.issuer().issuer()` is invalid
-* `flow.getFlowDirection()` vs local `direction`
-
-Here is a cleaned-up version of the main happy-path test using argument capture too, in case you want to verify aliases and direction precisely.
 
 
-Yes. The class is doing the right kind of work, but it looks fragile and harder to maintain than it needs to be.
+⸻
 
-Here are the main improvements I’d make.
+Why this is good
 
-## 1. Fix naming and consistency first
+This suite gives you:
+•	100% line coverage
+•	100% branch coverage
+•	clean separation between:
+•	authorization behavior
+•	transformation behavior
+•	explicit checks that unauthorized flows do not continue
+•	order verification on the happy path
 
-The snippet has multiple naming inconsistencies that make the code error-prone:
+⸻
 
-* `getConfiguration()` vs `getflowConfiguration()`
-* `ApplyflowconfigurationRequest` vs `ApiFlowConfigurationRequest`
-* `ApiFlowConfigurationResponse` naming mismatch
-* `apiFlowConfiguraiton` typo
-* `getAuthorizedCodeAp()` looks suspicious
-* `getTokenContext.issuer()` is syntactically broken
-* `flow.getFlowDirection()` and `direction` both exist
+A stricter version
 
-That matters because when a class already has inconsistent names, bugs hide easily.
-
-## 2. Compute direction once and use it everywhere
-
-You currently fetch direction from configuration but authorization uses `flow.getFlowDirection()`. That can create subtle inconsistency.
-
-Use one source of truth:
-
-```java
-FlowDirection direction = flow.getConfiguration().getDirection();
-```
-
-Then pass `direction` into authorization and transformations.
-
-## 3. Split `doProcessFlow` into smaller methods
-
-Right now the method mixes:
-
-* config extraction
-* authorization
-* request transformation
-* forwarding
-* response transformation
-
-That makes the flow harder to read and harder to test in isolation.
-
-A cleaner version would look like:
-
-```java
-@Override
-public void doProcessFlow(ApiFlow flow, ForwardFlowPort forwardFlowPort) {
-    ApiFlowConfiguration configuration = flow.getConfiguration();
-    FlowDirection direction = configuration.getDirection();
-
-    checkIsAuthorized(flow, configuration, direction);
-    applyRequestTransformationIfNeeded(flow, configuration, direction);
-    forwardFlowPort.forwardFlow(flow);
-    applyResponseTransformationIfNeeded(flow, configuration, direction);
-}
-```
-
-## 4. Extract request/response transformation logic
-
-Both branches are structurally similar. That duplication is small, but still worth isolating.
+If your transformation context classes expose getters like getAlias(), getDirection(), getApiFlowRequest(), getApiFlowResponse(), then you can make the tests even better by verifying the built context contents instead of only checking type/order.
 
 Example:
 
-```java
-private void applyRequestTransformationIfNeeded(ApiFlow flow,
-                                                ApiFlowConfiguration configuration,
-                                                FlowDirection direction) {
-    ApiFlowConfigurationRequest requestConfig = configuration.getRequestTransformations();
-    if (requestConfig == null) {
-        return;
-    }
-
-    ApiFlowRequestTransformationCtx ctx = ApiFlowRequestTransformationCtx.builder()
-            .apiFlowRequest(flow.getRequest())
-            .alias(requestConfig.getAlias())
-            .direction(direction)
-            .build();
-
-    applyTransformationPort.applyTransformation(ctx);
-}
-```
-
-And same idea for response.
-
-This gives each method one job.
-
-## 5. Simplify the authorization condition
-
-The current `if` is extremely hard to trust because it packs multiple cases into one large boolean expression.
-
-That kind of code is where production bugs live.
-
-Instead, name the rules:
-
-```java
-private void checkIsAuthorized(ApiFlow flow,
-                               ApiFlowConfiguration configuration,
-                               FlowDirection direction) {
-    List<String> authorizedSources = configuration.getAuthorizedCodeAp();
-
-    if (authorizedSources.contains("all")) {
-        return;
-    }
-
-    boolean authorized = switch (direction) {
-        case IN -> isAuthorizedIn(flow, authorizedSources);
-        case OUT -> isAuthorizedOut(flow, authorizedSources);
-    };
-
-    if (!authorized) {
-        throwUnauthorized(flow);
-    }
-}
-```
-
-Then:
-
-```java
-private boolean isAuthorizedIn(ApiFlow flow, List<String> authorizedSources) {
-    String issuer = flow.getRequest().getTokenContext().issuer();
-    return authorizedSources.contains(issuer);
-}
-
-private boolean isAuthorizedOut(ApiFlow flow, List<String> authorizedSources) {
-    String issuer = flow.getRequest().getTokenContext().issuer();
-    String subject = flow.getRequest().getTokenContext().subject();
-    return "apigee".equals(issuer) && authorizedSources.contains(subject);
-}
-```
-
-That is much easier to read and verify.
-
-## 6. Avoid repeated deep chaining
-
-You repeatedly do things like:
-
-```java
-flow.getRequest().getTokenContext().issuer()
-flow.getRequest().getTokenContext().subject()
-```
-
-Extract once:
-
-```java
-TokenContext tokenContext = flow.getRequest().getTokenContext();
-String issuer = tokenContext.issuer();
-String subject = tokenContext.subject();
-```
-
-That improves readability and reduces repeated null-sensitive traversals.
-
-## 7. Make exception creation explicit
-
-The exception message is useful, but building it inline inside the authorization `if` makes the method noisy.
-
-Prefer:
-
-```java
-private void throwUnauthorized(ApiFlow flow) {
-    TokenContext tokenContext = flow.getRequest().getTokenContext();
-
-    throw new GilCoreException(
-            GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
-            "La liste de sources dans la configuration du flow et la source du flow ("
-                    + tokenContext.issuer() + ", " + tokenContext.subject()
-                    + ") ne correspondent pas."
-    );
-}
-```
-
-Now the intent is obvious.
-
-## 8. Consider null-safety around configuration fields
-
-If `authorizedCodeAp`, `requestTransformations`, `responseTransformations`, `request`, or `tokenContext` can ever be null, this code can blow up with a `NullPointerException`.
-
-At minimum, decide whether null is allowed. If not, fail fast:
-
-```java
-Objects.requireNonNull(flow, "flow must not be null");
-Objects.requireNonNull(flow.getConfiguration(), "flow configuration must not be null");
-```
-
-If null is allowed in config collections, protect against it:
-
-```java
-List<String> authorizedSources = Optional.ofNullable(configuration.getAuthorizedCodeAp())
-        .orElse(List.of());
-```
-
-## 9. Prefer `"all".equals(...)`-style safety when comparing strings
-
-You already use `.contains("all")`, which is fine. But for direct equality checks like `"apigee"` always write:
-
-```java
-"apigee".equals(issuer)
-```
-
-Never:
-
-```java
-issuer.equals("apigee")
-```
-
-because it is null-unsafe.
-
-## 10. Decide whether transformation should happen before authorization failure
-
-Right now authorization is checked first, which is probably correct. Keep that explicit as a business rule. It prevents unauthorized payload transformation work.
-
-That rule should be reflected in tests:
-
-* unauthorized => no transformation, no forward
-* request transformation happens before forwarding
-* response transformation happens after forwarding
-
-## 11. Improve testability with focused methods
-
-Once you split the logic, tests become simpler:
-
-* one test class for `doProcessFlow`
-* one test set for authorization rules
-* one test each for request/response transformation behavior
-
-That is much easier than verifying everything through one giant orchestration method.
-
-## 12. Consider using a constant for `"all"` and `"apigee"`
-
-Magic strings should usually be constants:
-
-```java
-private static final String AUTHORIZED_ALL = "all";
-private static final String APIGEE_ISSUER = "apigee";
-```
-
-That avoids typos and makes intent clearer.
-
----
-
-## Example of a cleaner version
-
-```java
-public class ApiFlowProcessorStrategyImpl implements FlowProcessorStrategy<ApiFlow> {
-
-    private static final String AUTHORIZED_ALL = "all";
-    private static final String APIGEE_ISSUER = "apigee";
-
-    private final ApplyTransformationPort applyTransformationPort;
-
-    public ApiFlowProcessorStrategyImpl(ApplyTransformationPort applyTransformationPort) {
-        this.applyTransformationPort = applyTransformationPort;
-    }
-
-    @Override
-    public void doProcessFlow(ApiFlow flow, ForwardFlowPort forwardFlowPort) {
-        ApiFlowConfiguration configuration = flow.getConfiguration();
-        FlowDirection direction = configuration.getDirection();
-
-        checkIsAuthorized(flow, configuration, direction);
-        applyRequestTransformationIfNeeded(flow, configuration, direction);
-
-        forwardFlowPort.forwardFlow(flow);
-
-        applyResponseTransformationIfNeeded(flow, configuration, direction);
-    }
-
-    private void applyRequestTransformationIfNeeded(ApiFlow flow,
-                                                    ApiFlowConfiguration configuration,
-                                                    FlowDirection direction) {
-        ApiFlowConfigurationRequest requestConfig = configuration.getRequestTransformations();
-        if (requestConfig == null) {
-            return;
-        }
-
-        ApiFlowRequestTransformationCtx ctx = ApiFlowRequestTransformationCtx.builder()
-                .apiFlowRequest(flow.getRequest())
-                .alias(requestConfig.getAlias())
-                .direction(direction)
-                .build();
-
-        applyTransformationPort.applyTransformation(ctx);
-    }
-
-    private void applyResponseTransformationIfNeeded(ApiFlow flow,
-                                                     ApiFlowConfiguration configuration,
-                                                     FlowDirection direction) {
-        ApiFlowConfigurationResponse responseConfig = configuration.getResponseTransformations();
-        if (responseConfig == null) {
-            return;
-        }
-
-        ApiFlowResponseTransformationCtx ctx = ApiFlowResponseTransformationCtx.builder()
-                .apiFlowResponse(flow.getResponse())
-                .alias(responseConfig.getAlias())
-                .direction(direction)
-                .build();
-
-        applyTransformationPort.applyTransformation(ctx);
-    }
-
-    private void checkIsAuthorized(ApiFlow flow,
-                                   ApiFlowConfiguration configuration,
-                                   FlowDirection direction) {
-        List<String> authorizedSources = configuration.getAuthorizedCodeAp();
-        if (authorizedSources == null || authorizedSources.isEmpty()) {
-            throwUnauthorized(flow);
-        }
-
-        if (authorizedSources.contains(AUTHORIZED_ALL)) {
-            return;
-        }
-
-        boolean authorized = switch (direction) {
-            case IN -> isAuthorizedIn(flow, authorizedSources);
-            case OUT -> isAuthorizedOut(flow, authorizedSources);
-        };
-
-        if (!authorized) {
-            throwUnauthorized(flow);
-        }
-    }
-
-    private boolean isAuthorizedIn(ApiFlow flow, List<String> authorizedSources) {
-        TokenContext tokenContext = flow.getRequest().getTokenContext();
-        return authorizedSources.contains(tokenContext.issuer());
-    }
-
-    private boolean isAuthorizedOut(ApiFlow flow, List<String> authorizedSources) {
-        TokenContext tokenContext = flow.getRequest().getTokenContext();
-        return APIGEE_ISSUER.equals(tokenContext.issuer())
-                && authorizedSources.contains(tokenContext.subject());
-    }
-
-    private void throwUnauthorized(ApiFlow flow) {
-        TokenContext tokenContext = flow.getRequest().getTokenContext();
-
-        throw new GilCoreException(
-                GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
-                "La liste de sources dans la configuration du flow et la source du flow ("
-                        + tokenContext.issuer() + ", " + tokenContext.subject()
-                        + ") ne correspondent pas."
-        );
-    }
-}
-```
-
-## Highest-value improvements, in order
-
-If you only do a few things, I’d prioritize:
-
-1. fix naming/typos
-2. unify direction source
-3. split authorization into readable helper methods
-4. extract request/response transformation helpers
-5. add null-safety assumptions explicitly
-
-If you want, I can also rewrite your unit test suite so it matches this refactored version cleanly.
+verify(applyTransformationPort).applyTransformation(argThat(
+(ApiFlowRequestTransformationCtx ctx) ->
+ctx.getApiFlowRequest() == request
+&& ctx.getAlias().equals("request-alias")
+&& ctx.getDirection() == FlowDirection.IN
+));
+
+And for response:
+
+verify(applyTransformationPort).applyTransformation(argThat(
+(ApiFlowResponseTransformationCtx ctx) ->
+ctx.getApiFlowResponse() == response
+&& ctx.getAlias().equals("response-alias")
+&& ctx.getDirection() == FlowDirection.IN
+));
+
+That’s the version I’d use in a real codebase if those getters exist.
+
+⸻
+
+Suggested dependencies
+
+For Maven, the usual setup is still JUnit Jupiter + Mockito’s JUnit integration. JUnit’s current docs show the modern Jupiter stack, and Mockito remains the mainstream mocking framework for this purpose.  ￼
+
+<dependencies>
+    <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <scope>test</scope>
+    </dependency>
+
+    <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-junit-jupiter</artifactId>
+        <scope>test</scope>
+    </dependency>
+
+    <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+
+If you want, paste the signatures of:
+•	ApiFlowRequestTransformationCtx
+•	ApiFlowResponseTransformationCtx
+•	GilCoreException
+
+and I’ll tighten this into a version that also verifies the exact context field values and exception assertions with zero guessing.
