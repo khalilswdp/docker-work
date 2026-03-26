@@ -525,4 +525,131 @@ class ApiFlowProcessorStrategyImplTest {
         when(tokenContext.subject()).thenReturn(subject);
     }
 }
+
+
+
+private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
+    boolean authorizedForAll = apiFlowConfiguration.getAuthorizedCodeAp().contains("all");
+    boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN
+            && apiFlowConfiguration.getAuthorizedCodeAp().contains(flow.getRequest().getTokenContext().issuer());
+    boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
+            && flow.getRequest().getTokenContext().issuer().equals("apigee")
+            && apiFlowConfiguration.getAuthorizedCodeAp().contains(flow.getRequest().getTokenContext().subject());
+
+    if (!authorizedForAll && !authorizedIn && !authorizedOut) {
+        throw new GilCoreException(
+                GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
+                "la liste de sources dans la configuration du flow et la source du flow ("
+                        + flow.getRequest().getTokenContext().issuer() + ", "
+                        + flow.getRequest().getTokenContext().subject() + ") ne correspondent pas."
+        );
+    }
+}
+
+/**
+ * Verifies the full happy-path orchestration:
+ *
+ * <ul>
+ *     <li>Authorization succeeds in OUT direction (issuer = apigee, subject authorized)</li>
+ *     <li>Request transformation is applied</li>
+ *     <li>The flow is forwarded</li>
+ *     <li>Response transformation is applied after forwarding</li>
+ * </ul>
+ *
+ * <p>This ensures the correct execution order:
+ * request transformation → forward → response transformation.
+ */
+@Test
+void should_apply_request_transformation_then_forward_then_response_transformation() {
+    // Arrange: valid OUT authorization (apigee + authorized subject)
+    when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
+
+    // Arrange: request transformation configured
+    ApiFlowConfigurationRequest requestConfig = ApiFlowConfigurationRequest.builder()
+            .alias(List.of(
+                    AliasingTransformationConfiguration.builder()
+                            .pointer("test-pointer")
+                            .build()
+            ))
+            .build();
+
+    // Arrange: response transformation configured
+    ApiFlowConfigurationResponse responseConfig = ApiFlowConfigurationResponse.builder()
+            .alias(List.of(
+                    AliasingTransformationConfiguration.builder()
+                            .pointer("response-pointer")
+                            .build()
+            ))
+            .build();
+
+    when(configuration.getRequestTransformations()).thenReturn(requestConfig);
+    when(configuration.getResponseTransformations()).thenReturn(responseConfig);
+
+    // Arrange: token context required for OUT authorization
+    when(flow.getRequest()).thenReturn(request);
+    when(flow.getResponse()).thenReturn(response);
+    when(request.getTokenContext()).thenReturn(tokenContext);
+    when(tokenContext.issuer()).thenReturn("apigee");
+    when(tokenContext.subject()).thenReturn("subject-1");
+
+    // Act
+    strategy.doProcessFlow(flow, forwardFlowPort);
+
+    // Assert: verify execution order
+    InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
+    inOrder.verify(applyTransformationPort)
+           .applyTransformation(any(ApiFlowRequestTransformationCtx.class));
+    inOrder.verify(forwardFlowPort)
+           .forwardFlow(flow);
+    inOrder.verify(applyTransformationPort)
+           .applyTransformation(any(ApiFlowResponseTransformationCtx.class));
+}
+
+/**
+ * In IN direction, the issuer must be present in the authorized sources list.
+ * If so, the flow should be accepted and forwarded.
+ */
+@Test
+void should_forward_flow_when_direction_is_in_and_issuer_is_authorized() {
+    // Arrange: issuer matches authorized sources
+    stubIssuer("issuer-1");
+    when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
+    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("issuer-1"));
+
+    // No transformations configured
+    when(configuration.getRequestTransformations()).thenReturn(null);
+    when(configuration.getResponseTransformations()).thenReturn(null);
+
+    // Act
+    strategy.doProcessFlow(flow, forwardFlowPort);
+
+    // Assert
+    verify(forwardFlowPort).forwardFlow(flow);
+    verifyNoInteractions(applyTransformationPort);
+}
+
+/**
+ * If authorization fails, the strategy must stop immediately:
+ * <ul>
+ *     <li>No request transformation</li>
+ *     <li>No forwarding</li>
+ *     <li>No response transformation</li>
+ * </ul>
+ */
+@Test
+void should_not_forward_or_transform_when_authorization_fails() {
+    // Arrange: issuer is not authorized
+    stubIssuer("issuer-1");
+    when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
+    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("forbidden-source"));
+
+    // Act / Assert
+    assertThrows(GilCoreException.class,
+            () -> strategy.doProcessFlow(flow, forwardFlowPort));
+
+    verifyNoInteractions(applyTransformationPort, forwardFlowPort);
+}
+
 ```
+
