@@ -3,37 +3,40 @@ package com.example;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
-import java.util.Collections;
 import java.util.List;
-
-import org.junit.jupiter.api.*;
-import org.mockito.InOrder;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import static org.mockito.Mockito.*;
-
 /**
- * Unit tests for {@link ApiFlowProcessorStrategyImpl}.
+ * Unit tests for {@link EventFlowProcessorStrategyImpl}.
  *
- * <p>This suite focuses on the observable behavior of the strategy:
+ * <p>This suite validates:
  * <ul>
- *     <li>authorization rules</li>
- *     <li>request/response transformation triggering</li>
- *     <li>overall orchestration order</li>
+ *     <li>authorization rules for event flows</li>
+ *     <li>transformation context construction</li>
+ *     <li>payload update after transformation</li>
+ *     <li>forwarding behavior and execution order</li>
  *     <li>fail-fast behavior when authorization fails</li>
  * </ul>
- *
- * <p>Tests are grouped by responsibility using nested classes so that each
- * behavior is easy to locate and evolve.
  */
 @ExtendWith(MockitoExtension.class)
-class ApiFlowProcessorStrategyImplTest {
+class EventFlowProcessorStrategyImplTest {
 
     @Mock
     private ApplyTransformationPort applyTransformationPort;
@@ -42,39 +45,26 @@ class ApiFlowProcessorStrategyImplTest {
     private ForwardFlowPort forwardFlowPort;
 
     @Mock
-    private ApiFlow flow;
+    private EventFlow flow;
 
     @Mock
-    private ApiFlowConfiguration configuration;
-
-    @Mock
-    private ApiFlowRequest request;
-
-    @Mock
-    private ApiFlowResponse response;
+    private EventFlowConfiguration flowConfiguration;
 
     @Mock
     private TokenContext tokenContext;
 
-    @Mock
-    private ApiFlowConfigurationRequest requestTransformations;
-
-    @Mock
-    private ApiFlowConfigurationResponse responseTransformations;
-
-    private ApiFlowProcessorStrategyImpl strategy;
+    private EventFlowProcessorStrategyImpl strategy;
 
     @BeforeEach
     void setUp() {
-        strategy = new ApiFlowProcessorStrategyImpl(applyTransformationPort);
+        strategy = new EventFlowProcessorStrategyImpl(applyTransformationPort);
 
-        // Minimal shared setup for all tests.
-        when(flow.getFlowConfiguration()).thenReturn(configuration);
-        when(flow.getConfiguration()).thenReturn(configuration);
+        // Minimal shared setup used by all tests.
+        when(flow.getFlowConfiguration()).thenReturn(flowConfiguration);
     }
 
     /**
-     * Groups tests related to the authorization rules enforced before any
+     * Groups tests related to authorization rules evaluated before any
      * transformation or forwarding is performed.
      */
     @Nested
@@ -82,97 +72,115 @@ class ApiFlowProcessorStrategyImplTest {
     class AuthorizationTests {
 
         /**
-         * The special source "all" should authorize the flow immediately,
-         * without requiring issuer/subject checks.
+         * The special authorized source "all" must allow the flow immediately,
+         * regardless of direction or token source.
+         *
+         * <p>Once authorized, the strategy must:
+         * <ul>
+         *     <li>build a transformation context</li>
+         *     <li>apply the transformation</li>
+         *     <li>propagate the transformed payload back into the flow</li>
+         *     <li>forward the flow</li>
+         * </ul>
          */
         @Test
-        void should_forward_flow_when_authorized_sources_contains_all() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
+        void should_apply_transformation_update_payload_and_forward_when_authorized_sources_contains_all() {
+            // Arrange: configuration explicitly authorizes all sources.
+            EventFlowConfigurationTransformationConfiguration transformationConfiguration =
+                    buildTransformationConfiguration();
+
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
+            when(flowConfiguration.getTransformations()).thenReturn(transformationConfiguration);
+            when(flow.getPayload()).thenReturn("initial-payload");
+            when(flow.getHeaders()).thenReturn(Map.of("x-header", List.of("value")));
+            when(flow.getReceivedEventTimestamp()).thenReturn(123456789L);
+
+            // Simulate a transformation updating the payload carried by the context.
+            doAnswer(invocation -> {
+                EventFlowTransformationCtx ctx = invocation.getArgument(0);
+                ctx.setEventPayload("transformed-payload");
+                return null;
+            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
 
             // Act
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            // Assert: transformation result must be written back to the flow before forwarding.
+            InOrder inOrder = inOrder(applyTransformationPort, flow, forwardFlowPort);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            inOrder.verify(flow).setPayload("transformed-payload");
+            inOrder.verify(forwardFlowPort).forwardFlow(flow);
+            verifyNoMoreInteractions(applyTransformationPort, flow, forwardFlowPort);
         }
 
         /**
-         * In IN direction, authorization must be based on the token issuer.
+         * In event flows, the non-"all" authorization path is valid only when:
+         * <ul>
+         *     <li>direction is OUT</li>
+         *     <li>issuer is "apigee"</li>
+         *     <li>subject is contained in the authorized sources list</li>
+         * </ul>
          */
         @Test
-        void should_forward_flow_when_direction_is_in_and_issuer_is_authorized() {
+        void should_apply_transformation_update_payload_and_forward_when_direction_is_out_and_issuer_is_apigee_and_subject_is_authorized() {
+            // Arrange: valid OUT authorization path.
+            stubIssuerAndSubject("apigee", "subject-1");
+            EventFlowConfigurationTransformationConfiguration transformationConfiguration =
+                    buildTransformationConfiguration();
+
+            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
+            when(flowConfiguration.getTransformations()).thenReturn(transformationConfiguration);
+            when(flow.getPayload()).thenReturn("initial-payload");
+            when(flow.getHeaders()).thenReturn(Map.of("x-header", List.of("value")));
+            when(flow.getReceivedEventTimestamp()).thenReturn(123456789L);
+
+            doAnswer(invocation -> {
+                EventFlowTransformationCtx ctx = invocation.getArgument(0);
+                ctx.setEventPayload("transformed-payload");
+                return null;
+            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+
+            // Act
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            // Assert: full happy-path execution order.
+            InOrder inOrder = inOrder(applyTransformationPort, flow, forwardFlowPort);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            inOrder.verify(flow).setPayload("transformed-payload");
+            inOrder.verify(forwardFlowPort).forwardFlow(flow);
+            verifyNoMoreInteractions(applyTransformationPort, flow, forwardFlowPort);
+        }
+
+        /**
+         * If direction is not OUT and "all" is not configured, the flow must be rejected.
+         *
+         * <p>This test also helps cover the authorization condition where the OUT
+         * branch evaluates to false.
+         */
+        @Test
+        void should_throw_when_direction_is_not_out_and_all_is_not_configured() {
             // Arrange
-            stubIssuer("issuer-1");
+            stubIssuerAndSubject("apigee", "subject-1");
             when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("issuer-1"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-
-        /**
-         * In IN direction, if the issuer is not in the authorized source list,
-         * the flow must be rejected immediately.
-         */
-        @Test
-        void should_throw_when_direction_is_in_and_issuer_is_not_authorized() {
-            // Arrange
-            stubTokenContext("issuer-1", "subject-1");
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("another-issuer"));
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
 
             // Act / Assert
             assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
 
-            // No side effect should happen after an authorization failure.
             verifyNoInteractions(applyTransformationPort, forwardFlowPort);
         }
 
         /**
-         * In OUT direction, authorization must succeed only when:
-         * <ul>
-         *     <li>issuer is "apigee"</li>
-         *     <li>subject is present in the authorized source list</li>
-         * </ul>
-         */
-        @Test
-        void should_forward_flow_when_direction_is_out_and_issuer_is_apigee_and_subject_is_authorized() {
-            // Arrange
-            stubTokenContext("apigee", "subject-1");
-            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-
-        /**
-         * In OUT direction, any issuer other than "apigee" must be rejected,
-         * even when the subject is otherwise present in the authorized list.
+         * In OUT direction, an issuer different from "apigee" must be rejected,
+         * even if the subject is present in the authorized list.
          */
         @Test
         void should_throw_when_direction_is_out_and_issuer_is_not_apigee() {
             // Arrange
-            stubTokenContext("not-apigee", "subject-1");
-            when(configuration.getDirection()).thenReturn(FlowDirection.OUT);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
+            stubIssuerAndSubject("not-apigee", "subject-1");
+            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
 
             // Act / Assert
             assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
@@ -181,318 +189,15 @@ class ApiFlowProcessorStrategyImplTest {
         }
 
         /**
-         * In OUT direction, even with issuer "apigee", the subject must still
-         * be explicitly authorized.
+         * In OUT direction, even with issuer "apigee", the subject must still be
+         * explicitly authorized.
          */
         @Test
         void should_throw_when_direction_is_out_and_subject_is_not_authorized() {
             // Arrange
-            stubTokenContext("apigee", "subject-1");
-            when(configuration.getDirection()).thenReturn(FlowDirection.OUT);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("another-subject"));
-
-            // Act / Assert
-            assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
-
-            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
-        }
-
-        /**
-         * Documents the behavior currently observed in the implementation:
-         * a null authorized source list triggers a {@link NullPointerException}
-         * before a domain exception is raised.
-         *
-         * <p>If the production code is fixed later to throw a business exception
-         * instead, this test should be updated accordingly.
-         */
-        @Test
-        void should_throw_null_pointer_when_authorized_sources_is_null_with_current_implementation() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(null);
-
-            // Act / Assert
-            assertThrows(NullPointerException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
-
-            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
-        }
-
-        /**
-         * An empty authorized source list should reject the flow because there
-         * is no matching allowed source.
-         */
-        @Test
-        void should_throw_when_authorized_sources_is_empty() {
-            // Arrange
-            stubTokenContext("issuer-1", "subject-1");
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(Collections.emptyList());
-
-            // Act / Assert
-            assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
-
-            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
-        }
-    }
-
-    /**
-     * Groups tests related only to request-side transformation triggering.
-     */
-    @Nested
-    @DisplayName("Request transformations")
-    class RequestTransformationTests {
-
-        /**
-         * No request transformation must be applied when the configuration is absent.
-         */
-        @Test
-        void should_not_apply_request_transformation_when_request_configuration_is_null() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-
-        /**
-         * A configured request transformation must be invoked before forwarding.
-         */
-        @Test
-        void should_apply_request_transformation_when_request_configuration_is_present() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(requestTransformations);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-            ApiFlowConfigurationRequest requestConfig = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("test-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            when(configuration.getRequestTransformations()).thenReturn(requestConfig);
-            when(flow.getRequest()).thenReturn(request);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
-        }
-    }
-
-    /**
-     * Groups tests related only to response-side transformation triggering.
-     */
-    @Nested
-    @DisplayName("Response transformations")
-    class ResponseTransformationTests {
-
-        /**
-         * No response transformation must be applied when the configuration is absent.
-         */
-        @Test
-        void should_not_apply_response_transformation_when_response_configuration_is_null() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-
-        /**
-         * A configured response transformation must be invoked after forwarding.
-         */
-        @Test
-        void should_apply_response_transformation_when_response_configuration_is_present() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(responseTransformations);
-            ApiFlowConfigurationResponse responseConfig = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("response-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            when(configuration.getResponseTransformations()).thenReturn(responseConfig);
-            when(flow.getResponse()).thenReturn(response);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            InOrder inOrder = inOrder(forwardFlowPort, applyTransformationPort);
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
-            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
-        }
-    }
-
-    /**
-     * Groups tests that verify the global orchestration order of the strategy.
-     */
-    @Nested
-    @DisplayName("Orchestration")
-    class OrchestrationTests {
-
-        /**
-         * When authorization succeeds and no transformations are configured,
-         * the strategy should only forward the flow.
-         */
-        @Test
-        void should_forward_flow_without_transformations_when_authorized() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-
-        /**
-         * Request transformation must happen before the flow is forwarded.
-         */
-        @Test
-        void should_apply_request_transformation_before_forwarding() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(requestTransformations);
-            when(configuration.getResponseTransformations()).thenReturn(null);
-            ApiFlowConfigurationRequest requestConfig = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("test-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            when(configuration.getRequestTransformations()).thenReturn(requestConfig);
-            when(flow.getRequest()).thenReturn(request);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-        }
-
-        /**
-         * Response transformation must happen only after the flow is forwarded.
-         */
-        @Test
-        void should_apply_response_transformation_after_forwarding() {
-            // Arrange
-            when(configuration.getDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("all"));
-            when(configuration.getRequestTransformations()).thenReturn(null);
-            when(configuration.getResponseTransformations()).thenReturn(responseTransformations);
-            ApiFlowConfigurationResponse responseConfig = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("response-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            when(configuration.getResponseTransformations()).thenReturn(responseConfig);
-            when(flow.getResponse()).thenReturn(response);
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            InOrder inOrder = inOrder(forwardFlowPort, applyTransformationPort);
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
-        }
-
-        /**
-         * Full happy path: request transformation, then forwarding, then response transformation.
-         */
-        @Test
-        void should_apply_request_transformation_then_forward_then_response_transformation() {
-            // Arrange
+            stubIssuerAndSubject("apigee", "subject-1");
             when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
-
-            ApiFlowConfigurationRequest requestConfig = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("test-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            ApiFlowConfigurationResponse responseConfig = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(
-                            AliasingTransformationConfiguration.builder()
-                                    .pointer("response-pointer")
-                                    .build()
-                    ))
-                    .build();
-
-            when(configuration.getRequestTransformations()).thenReturn(requestConfig);
-            when(configuration.getResponseTransformations()).thenReturn(responseConfig);
-
-            when(flow.getRequest()).thenReturn(request);
-            when(flow.getResponse()).thenReturn(response);
-            when(request.getTokenContext()).thenReturn(tokenContext);
-            when(tokenContext.issuer()).thenReturn("apigee");
-            when(tokenContext.subject()).thenReturn("subject-1");
-
-            // Act
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            // Assert
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowRequestTransformationCtx.class));
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(ApiFlowResponseTransformationCtx.class));
-            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
-        }
-
-        /**
-         * If authorization fails, the strategy must stop immediately:
-         * no forwarding and no transformation should happen.
-         */
-        @Test
-        void should_not_forward_or_transform_when_authorization_fails() {
-            // Arrange
-            stubIssuer("issuer-1");
-            when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-            when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("forbidden-source"));
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("another-subject"));
 
             // Act / Assert
             assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
@@ -502,153 +207,168 @@ class ApiFlowProcessorStrategyImplTest {
     }
 
     /**
-     * Shared helper used only by tests that need issuer/subject-based authorization.
+     * Groups tests focused on the transformation context built and sent to the
+     * transformation port.
      */
-    private void stubTokenContext(String issuer, String subject) {
-        when(flow.getRequest()).thenReturn(request);
-        when(request.getTokenContext()).thenReturn(tokenContext);
-        when(tokenContext.issuer()).thenReturn(issuer);
-        when(tokenContext.subject()).thenReturn(subject);
+    @Nested
+    @DisplayName("Transformation")
+    class TransformationTests {
+
+        /**
+         * The strategy must build a transformation context from:
+         * <ul>
+         *     <li>configured aliases</li>
+         *     <li>configured event header mapping</li>
+         *     <li>flow payload</li>
+         *     <li>flow headers</li>
+         *     <li>received event timestamp</li>
+         * </ul>
+         */
+        @Test
+        void should_build_transformation_context_with_expected_values() {
+            // Arrange
+            stubIssuerAndSubject("apigee", "subject-1");
+
+            EventFlowConfigurationHeaders headerConfiguration = EventFlowConfigurationHeaders.builder()
+                    .mainBusinessObjectId("id-path")
+                    .mainBusinessObjectType("type-path")
+                    .bankCode("bank-path")
+                    .build();
+
+            EventFlowConfigurationTransformationConfiguration transformationConfiguration =
+                    EventFlowConfigurationTransformationConfiguration.builder()
+                            .headers(headerConfiguration)
+                            .alias(List.of(
+                                    AliasingTransformationConfiguration.builder()
+                                            .pointer("alias-path")
+                                            .build()
+                            ))
+                            .build();
+
+            Map<String, List<String>> headers = Map.of("event-type", List.of("customer-created"));
+
+            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
+            when(flowConfiguration.getTransformations()).thenReturn(transformationConfiguration);
+            when(flow.getPayload()).thenReturn("event-payload");
+            when(flow.getHeaders()).thenReturn(headers);
+            when(flow.getReceivedEventTimestamp()).thenReturn(999L);
+
+            // Act
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            // Assert: capture the exact transformation context sent to the port.
+            ArgumentCaptor<EventFlowTransformationCtx> captor =
+                    ArgumentCaptor.forClass(EventFlowTransformationCtx.class);
+
+            verify(applyTransformationPort).applyTransformation(captor.capture());
+
+            EventFlowTransformationCtx ctx = captor.getValue();
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    transformationConfiguration.getAlias(), ctx.getAlias());
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    headerConfiguration, ctx.getEventFlowConfigurationHeaders());
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    "event-payload", ctx.getEventPayload());
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    headers, ctx.getHeaders());
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    999L, ctx.getReceivedEventTimestamp());
+
+            verify(flow).setPayload("event-payload");
+            verify(forwardFlowPort).forwardFlow(flow);
+        }
+
+        /**
+         * The transformed payload contained in the transformation context must be
+         * copied back into the flow before it is forwarded.
+         */
+        @Test
+        void should_write_back_transformed_payload_to_flow_before_forwarding() {
+            // Arrange
+            stubIssuerAndSubject("apigee", "subject-1");
+
+            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
+            when(flowConfiguration.getTransformations()).thenReturn(buildTransformationConfiguration());
+            when(flow.getPayload()).thenReturn("initial-payload");
+            when(flow.getHeaders()).thenReturn(Map.of());
+            when(flow.getReceivedEventTimestamp()).thenReturn(42L);
+
+            doAnswer(invocation -> {
+                EventFlowTransformationCtx ctx = invocation.getArgument(0);
+                ctx.setEventPayload("updated-by-transformation");
+                return null;
+            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+
+            // Act
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            // Assert: transformed payload must be written back before forwarding.
+            InOrder inOrder = inOrder(applyTransformationPort, flow, forwardFlowPort);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            inOrder.verify(flow).setPayload("updated-by-transformation");
+            inOrder.verify(forwardFlowPort).forwardFlow(flow);
+        }
     }
 
+    /**
+     * Groups tests that verify fail-fast behavior.
+     */
+    @Nested
+    @DisplayName("Fail-fast behavior")
+    class FailFastTests {
 
-    private void stubIssuer(String issuer) {
-        when(flow.getRequest()).thenReturn(request);
-        when(request.getTokenContext()).thenReturn(tokenContext);
-        when(tokenContext.issuer()).thenReturn(issuer);
+        /**
+         * When authorization fails, the strategy must stop immediately:
+         * <ul>
+         *     <li>no transformation is applied</li>
+         *     <li>payload is not modified</li>
+         *     <li>the flow is not forwarded</li>
+         * </ul>
+         */
+        @Test
+        void should_not_transform_update_payload_or_forward_when_authorization_fails() {
+            // Arrange
+            stubIssuerAndSubject("apigee", "subject-1");
+            when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
+            when(flowConfiguration.getAuthorizedCodeAp()).thenReturn(List.of("forbidden-subject"));
+
+            // Act / Assert
+            assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
+
+            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
+            verify(flow, org.mockito.Mockito.never()).setPayload(any());
+        }
     }
 
+    /**
+     * Creates a minimal valid transformation configuration used by tests that
+     * do not need to focus on the exact configuration values.
+     */
+    private EventFlowConfigurationTransformationConfiguration buildTransformationConfiguration() {
+        return EventFlowConfigurationTransformationConfiguration.builder()
+                .headers(EventFlowConfigurationHeaders.builder()
+                        .mainBusinessObjectId("id-path")
+                        .mainBusinessObjectType("type-path")
+                        .bankCode("bank-path")
+                        .build())
+                .alias(List.of(
+                        AliasingTransformationConfiguration.builder()
+                                .pointer("alias-path")
+                                .build()
+                ))
+                .build();
+    }
+
+    /**
+     * Stubs the token context required by authorization checks.
+     */
     private void stubIssuerAndSubject(String issuer, String subject) {
-        when(flow.getRequest()).thenReturn(request);
-        when(request.getTokenContext()).thenReturn(tokenContext);
+        when(flow.getTokenContext()).thenReturn(tokenContext);
         when(tokenContext.issuer()).thenReturn(issuer);
         when(tokenContext.subject()).thenReturn(subject);
     }
-}
-
-
-
-private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
-    boolean authorizedForAll = apiFlowConfiguration.getAuthorizedCodeAp().contains("all");
-    boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN
-            && apiFlowConfiguration.getAuthorizedCodeAp().contains(flow.getRequest().getTokenContext().issuer());
-    boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
-            && flow.getRequest().getTokenContext().issuer().equals("apigee")
-            && apiFlowConfiguration.getAuthorizedCodeAp().contains(flow.getRequest().getTokenContext().subject());
-
-    if (!authorizedForAll && !authorizedIn && !authorizedOut) {
-        throw new GilCoreException(
-                GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
-                "la liste de sources dans la configuration du flow et la source du flow ("
-                        + flow.getRequest().getTokenContext().issuer() + ", "
-                        + flow.getRequest().getTokenContext().subject() + ") ne correspondent pas."
-        );
-    }
-}
-
-/**
- * Verifies the full happy-path orchestration:
- *
- * <ul>
- *     <li>Authorization succeeds in OUT direction (issuer = apigee, subject authorized)</li>
- *     <li>Request transformation is applied</li>
- *     <li>The flow is forwarded</li>
- *     <li>Response transformation is applied after forwarding</li>
- * </ul>
- *
- * <p>This ensures the correct execution order:
- * request transformation → forward → response transformation.
- */
-@Test
-void should_apply_request_transformation_then_forward_then_response_transformation() {
-    // Arrange: valid OUT authorization (apigee + authorized subject)
-    when(flow.getFlowDirection()).thenReturn(FlowDirection.OUT);
-    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("subject-1"));
-
-    // Arrange: request transformation configured
-    ApiFlowConfigurationRequest requestConfig = ApiFlowConfigurationRequest.builder()
-            .alias(List.of(
-                    AliasingTransformationConfiguration.builder()
-                            .pointer("test-pointer")
-                            .build()
-            ))
-            .build();
-
-    // Arrange: response transformation configured
-    ApiFlowConfigurationResponse responseConfig = ApiFlowConfigurationResponse.builder()
-            .alias(List.of(
-                    AliasingTransformationConfiguration.builder()
-                            .pointer("response-pointer")
-                            .build()
-            ))
-            .build();
-
-    when(configuration.getRequestTransformations()).thenReturn(requestConfig);
-    when(configuration.getResponseTransformations()).thenReturn(responseConfig);
-
-    // Arrange: token context required for OUT authorization
-    when(flow.getRequest()).thenReturn(request);
-    when(flow.getResponse()).thenReturn(response);
-    when(request.getTokenContext()).thenReturn(tokenContext);
-    when(tokenContext.issuer()).thenReturn("apigee");
-    when(tokenContext.subject()).thenReturn("subject-1");
-
-    // Act
-    strategy.doProcessFlow(flow, forwardFlowPort);
-
-    // Assert: verify execution order
-    InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-    inOrder.verify(applyTransformationPort)
-           .applyTransformation(any(ApiFlowRequestTransformationCtx.class));
-    inOrder.verify(forwardFlowPort)
-           .forwardFlow(flow);
-    inOrder.verify(applyTransformationPort)
-           .applyTransformation(any(ApiFlowResponseTransformationCtx.class));
-}
-
-/**
- * In IN direction, the issuer must be present in the authorized sources list.
- * If so, the flow should be accepted and forwarded.
- */
-@Test
-void should_forward_flow_when_direction_is_in_and_issuer_is_authorized() {
-    // Arrange: issuer matches authorized sources
-    stubIssuer("issuer-1");
-    when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("issuer-1"));
-
-    // No transformations configured
-    when(configuration.getRequestTransformations()).thenReturn(null);
-    when(configuration.getResponseTransformations()).thenReturn(null);
-
-    // Act
-    strategy.doProcessFlow(flow, forwardFlowPort);
-
-    // Assert
-    verify(forwardFlowPort).forwardFlow(flow);
-    verifyNoInteractions(applyTransformationPort);
-}
-
-/**
- * If authorization fails, the strategy must stop immediately:
- * <ul>
- *     <li>No request transformation</li>
- *     <li>No forwarding</li>
- *     <li>No response transformation</li>
- * </ul>
- */
-@Test
-void should_not_forward_or_transform_when_authorization_fails() {
-    // Arrange: issuer is not authorized
-    stubIssuer("issuer-1");
-    when(flow.getFlowDirection()).thenReturn(FlowDirection.IN);
-    when(configuration.getAuthorizedCodeAp()).thenReturn(List.of("forbidden-source"));
-
-    // Act / Assert
-    assertThrows(GilCoreException.class,
-            () -> strategy.doProcessFlow(flow, forwardFlowPort));
-
-    verifyNoInteractions(applyTransformationPort, forwardFlowPort);
 }
 
 ```
