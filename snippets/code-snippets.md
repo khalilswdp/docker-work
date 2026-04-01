@@ -1,296 +1,556 @@
 ```
-/**
- * Unit tests for {@link JwtTokenUtil}.
- *
- * <p>This suite validates:
- * <ul>
- *     <li>utility-class constructor protection</li>
- *     <li>bearer token extraction rules</li>
- *     <li>JWT generation</li>
- *     <li>JWT parsing and validation</li>
- *     <li>high-level token extraction from an HTTP request</li>
- * </ul>
- */
-@ExtendWith(MockitoExtension.class)
-class JwtTokenUtilTest {
+class FlowConfigurationsLoaderTest {
 
-    @Mock
-    private HttpServletRequest httpServletRequest;
-
-    /**
-     * Tests related to the utility-class design.
-     */
     @Nested
-    @DisplayName("Constructor")
-    class ConstructorTests {
+    @DisplayName("loadAllFlowConfigurations")
+    class LoadAllFlowConfigurationsTests {
 
         /**
-         * The utility class must not be instantiable.
+         * If no file is present in the target folder, the loader must fail with
+         * {@link ConfigurationLoadingException}.
          */
         @Test
-        void should_throw_when_instantiating_utility_class() throws Exception {
-            var constructor = JwtTokenUtil.class.getDeclaredConstructor();
-            constructor.setAccessible(true);
+        void should_throw_when_no_file_is_found_in_target_folder() {
+            FlowConfigurationsLoader loader = new FlowConfigurationsLoader(
+                    List.of("flow-config-loader/empty/"),
+                    new ObjectMapper()
+            );
 
-            Exception exception = assertThrows(Exception.class, constructor::newInstance);
+            ConfigurationLoadingException exception = assertThrows(
+                    ConfigurationLoadingException.class,
+                    loader::loadAllFlowConfigurations
+            );
 
-            // Reflection wraps the original exception, so we assert on the cause.
-            assertInstanceOf(IllegalStateException.class, exception.getCause());
-            assertEquals("Utility class", exception.getCause().getMessage());
+            assertEquals("[GIL_003]An error occurred when trying to get the resources in the folder where the Flow Configurations should be stored ; [filesPath=flow-config-loader/empty/]", exception.getMessage());
+        }
+
+        /**
+         * If two files resolve to the same flowId, the loader must reject them.
+         */
+        @Test
+        void should_throw_when_two_flow_configurations_have_same_flow_id() {
+            FlowConfigurationsLoader loader = new FlowConfigurationsLoader(
+                    List.of("flow-config-loader/duplicate-flow-id/"),
+                    new ObjectMapper()
+            );
+
+            ConfigurationLoadingException exception = assertThrows(
+                    ConfigurationLoadingException.class,
+                    loader::loadAllFlowConfigurations
+            );
+
+            assertEquals(
+                    "[GIL_003]An error occurred when trying to get the resources in the folder where the Flow Configurations should be stored ; [filesPath=flow-config-loader/duplicate-flow-id/]",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * If one configuration file cannot be parsed, the current implementation
+         * wraps that failure into a runtime exception from the private parsing method.
+         */
+        @Test
+        void should_throw_runtime_exception_when_a_file_cannot_be_parsed() {
+            FlowConfigurationsLoader loader = new FlowConfigurationsLoader(
+                    List.of("flow-config-loader/malformed-json/"),
+                    new ObjectMapper()
+            );
+
+            RuntimeException exception = assertThrows(
+                    RuntimeException.class,
+                    loader::loadAllFlowConfigurations
+            );
+
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    exception.getMessage().startsWith(
+                            "[GIL_003]"
+                    )
+            );
         }
     }
 
-    /**
-     * Tests related to raw bearer token extraction from the Authorization header.
-     */
     @Nested
-    @DisplayName("extractBearerToken")
-    class ExtractBearerTokenTests {
+    @DisplayName("FlowConfigurationMapper")
+    class FlowConfigurationMapperTests {
 
         /**
-         * A missing Authorization header must be rejected.
+         * Mapping a null DTO is invalid.
          */
         @Test
-        void should_throw_when_authorization_header_is_missing() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn(null);
-
+        void should_throw_when_flow_configuration_dto_is_null() {
             IllegalArgumentException exception = assertThrows(
                     IllegalArgumentException.class,
-                    () -> JwtTokenUtil.extractBearerToken(httpServletRequest)
+                    () -> FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(null)
             );
 
-            assertEquals("Authorization header is missing", exception.getMessage());
+            assertEquals("The FlowConfigurationDto passed for mapping is Null.", exception.getMessage());
         }
 
         /**
-         * A blank Authorization header must be rejected.
+         * API DTOs should be mapped to API domain configurations.
          */
         @Test
-        void should_throw_when_authorization_header_is_blank() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("   ");
+        void should_map_api_flow_configuration_dto_to_domain() {
+            AliasingTransformationDto requestAlias = new AliasingTransformationDto();
+            requestAlias.setPointer("/request/path");
 
-            IllegalArgumentException exception = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> JwtTokenUtil.extractBearerToken(httpServletRequest)
+            AliasingTransformationDto responseAlias = new AliasingTransformationDto();
+            responseAlias.setPointer("/response/path");
+
+            ApiFlowConfigurationRequestTransformationDto requestDto =
+                    new ApiFlowConfigurationRequestTransformationDto();
+            requestDto.setAlias(List.of(requestAlias));
+
+            ApiFlowConfigurationResponseTransformationDto responseDto =
+                    new ApiFlowConfigurationResponseTransformationDto();
+            responseDto.setAlias(List.of(responseAlias));
+
+            ApiFlowConfigurationDto dto = new ApiFlowConfigurationDto();
+            dto.setFlowId("api-flow");
+            dto.setDirection("IN");
+            dto.setAuthorizedCodeAp(List.of("all"));
+            dto.setTargetWebApiCode("target-api");
+            dto.setRequestTransformations(requestDto);
+            dto.setResponseTransformations(responseDto);
+
+            FlowConfiguration result = FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto);
+
+            assertInstanceOf(ApiFlowConfiguration.class, result);
+
+            ApiFlowConfiguration api = (ApiFlowConfiguration) result;
+            assertEquals("api-flow", api.getFlowId());
+            assertEquals(FlowDirection.IN, api.getDirection());
+            assertEquals(List.of("all"), api.getAuthorizedCodeAp());
+            assertEquals("target-api", api.getTargetWebApiCode());
+
+            assertNotNull(api.getRequestTransformations());
+            assertEquals(1, api.getRequestTransformations().getAlias().size());
+            assertEquals("/request/path", api.getRequestTransformations().getAlias().get(0).getPointer());
+
+            assertNotNull(api.getResponseTransformations());
+            assertEquals(1, api.getResponseTransformations().getAlias().size());
+            assertEquals("/response/path", api.getResponseTransformations().getAlias().get(0).getPointer());
+        }
+
+        /**
+         * API DTOs must provide authorizedCodeAp.
+         */
+        @Test
+        void should_throw_when_api_flow_authorized_code_ap_is_null() {
+            ApiFlowConfigurationDto dto = new ApiFlowConfigurationDto();
+            dto.setFlowId("api-flow");
+            dto.setDirection("IN");
+            dto.setAuthorizedCodeAp(null);
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto)
             );
 
-            assertEquals("Authorization header is missing", exception.getMessage());
+            assertEquals("[GIL_002]The AuthorizedCodeAp passed for flow is api-flow Null.", exception.getMessage());
         }
 
         /**
-         * The header must start with the Bearer prefix.
+         * Event DTOs should map avro, headers, aliases, target topic and itrId.
          */
         @Test
-        void should_throw_when_authorization_header_does_not_start_with_bearer() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Basic abc.def");
+        void should_map_event_flow_configuration_dto_to_domain() {
+            EventFlowConfigurationAvroDto avroDto = new EventFlowConfigurationAvroDto();
+            avroDto.setPayloadType("payload-type");
 
-            IllegalArgumentException exception = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> JwtTokenUtil.extractBearerToken(httpServletRequest)
+            EventFlowConfigurationHeadersTransformationDto headersDto =
+                    new EventFlowConfigurationHeadersTransformationDto();
+            headersDto.setMainBusinessObjectId("id-path");
+            headersDto.setMainBusinessObjectyType("type-path");
+            headersDto.setBankCode("bank-path");
+
+            AliasingTransformationDto aliasDto = new AliasingTransformationDto();
+            aliasDto.setPointer("/event/path");
+
+            EventFlowConfigurationTransformationDto transformationDto =
+                    new EventFlowConfigurationTransformationDto();
+            transformationDto.setAvro(avroDto);
+            transformationDto.setContentHeaders(headersDto);
+            transformationDto.setAlias(List.of(aliasDto));
+
+            EventFlowConfigurationDto dto = new EventFlowConfigurationDto();
+            dto.setFlowId("event-flow");
+            dto.setDirection("OUT");
+            dto.setAuthorizedCodeAp(List.of("ap12345"));
+            dto.setTargetTopic("topic-1");
+            dto.setItrId("itr-1");
+            dto.setTransformationParams(transformationDto);
+
+            FlowConfiguration result = FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto);
+
+            assertInstanceOf(EventFlowConfiguration.class, result);
+
+            EventFlowConfiguration event = (EventFlowConfiguration) result;
+            assertEquals("event-flow", event.getFlowId());
+            assertEquals(FlowDirection.OUT, event.getDirection());
+            assertEquals(List.of("ap12345"), event.getAuthorizedCodeAp());
+            assertEquals("topic-1", event.getTargetTopic());
+            assertEquals("itr-1", event.getItrId());
+
+            assertNotNull(event.getTransformations());
+            assertNotNull(event.getTransformations().getAvro());
+            assertEquals("payload-type", event.getTransformations().getAvro().getPayloadType());
+
+            assertNotNull(event.getTransformations().getHeaders());
+            assertEquals("id-path", event.getTransformations().getHeaders().getMainBusinessObjectId());
+            assertEquals("type-path", event.getTransformations().getHeaders().getMainBusinessObjectType());
+            assertEquals("bank-path", event.getTransformations().getHeaders().getBankCode());
+
+            assertEquals(1, event.getTransformations().getAlias().size());
+            assertEquals("/event/path", event.getTransformations().getAlias().get(0).getPointer());
+        }
+
+        /**
+         * Event DTOs must provide authorizedCodeAp.
+         */
+        @Test
+        void should_throw_when_event_flow_authorized_code_ap_is_empty() {
+            EventFlowConfigurationDto dto = new EventFlowConfigurationDto();
+            dto.setFlowId("event-flow");
+            dto.setDirection("OUT");
+            dto.setAuthorizedCodeAp(List.of());
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto)
             );
 
-            assertEquals("Authorization header must start with Bearer", exception.getMessage());
+            assertEquals("[GIL_002]The AuthorizedCodeAp passed for flow is event-flow Null.", exception.getMessage());
         }
 
         /**
-         * A Bearer header without an actual token must be rejected.
+         * File DTOs should map target bucket and common base fields.
          */
         @Test
-        void should_throw_when_bearer_token_is_missing() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Bearer   ");
+        void should_map_file_flow_configuration_dto_to_domain() {
+            FileFlowConfigurationDto dto = new FileFlowConfigurationDto();
+            dto.setFlowId("file-flow");
+            dto.setDirection("IN");
+            dto.setTargetBucket("bucket-1");
 
-            IllegalArgumentException exception = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> JwtTokenUtil.extractBearerToken(httpServletRequest)
+            FlowConfiguration result = FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto);
+
+            assertInstanceOf(FileFlowConfiguration.class, result);
+
+            FileFlowConfiguration file = (FileFlowConfiguration) result;
+            assertEquals("file-flow", file.getFlowId());
+            assertEquals(FlowDirection.IN, file.getDirection());
+            assertEquals("bucket-1", file.getTargetBucket());
+        }
+
+        /**
+         * Null API alias lists should be normalized to empty lists.
+         */
+        @Test
+        void should_map_null_api_alias_lists_to_empty_lists() {
+            ApiFlowConfigurationRequestTransformationDto requestDto =
+                    new ApiFlowConfigurationRequestTransformationDto();
+            requestDto.setAlias(null);
+
+            ApiFlowConfigurationResponseTransformationDto responseDto =
+                    new ApiFlowConfigurationResponseTransformationDto();
+            responseDto.setAlias(null);
+
+            ApiFlowConfigurationDto dto = new ApiFlowConfigurationDto();
+            dto.setFlowId("api-flow");
+            dto.setDirection("IN");
+            dto.setAuthorizedCodeAp(List.of("all"));
+            dto.setRequestTransformations(requestDto);
+            dto.setResponseTransformations(responseDto);
+
+            ApiFlowConfiguration result =
+                    (ApiFlowConfiguration) FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto);
+
+            assertNotNull(result.getRequestTransformations());
+            assertNotNull(result.getRequestTransformations().getAlias());
+            assertEquals(0, result.getRequestTransformations().getAlias().size());
+
+            assertNotNull(result.getResponseTransformations());
+            assertNotNull(result.getResponseTransformations().getAlias());
+            assertEquals(0, result.getResponseTransformations().getAlias().size());
+        }
+
+        /**
+         * Null event alias lists should also be normalized to empty lists.
+         */
+        @Test
+        void should_map_null_event_alias_list_to_empty_list() {
+            EventFlowConfigurationTransformationDto transformationDto =
+                    new EventFlowConfigurationTransformationDto();
+            transformationDto.setAlias(null);
+            transformationDto.setAvro(null);
+            transformationDto.setContentHeaders(null);
+
+            EventFlowConfigurationDto dto = new EventFlowConfigurationDto();
+            dto.setFlowId("event-flow");
+            dto.setDirection("OUT");
+            dto.setAuthorizedCodeAp(List.of("ap12345"));
+            dto.setTransformationParams(transformationDto);
+
+            EventFlowConfiguration result =
+                    (EventFlowConfiguration) FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(dto);
+
+            assertNotNull(result.getTransformations());
+            assertNotNull(result.getTransformations().getAlias());
+            assertEquals(0, result.getTransformations().getAlias().size());
+            assertNull(result.getTransformations().getAvro());
+            assertNull(result.getTransformations().getHeaders());
+        }
+
+        /**
+         * Unsupported DTO subtypes must be rejected explicitly.
+         */
+        @Test
+        void should_throw_when_flow_configuration_dto_subtype_is_not_managed() {
+            FlowConfigurationDto unsupportedDto = new FlowConfigurationDto() {
+            };
+            unsupportedDto.setFlowId("unsupported");
+            unsupportedDto.setDirection("IN");
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationsLoader.FlowConfigurationMapper.toDomain(unsupportedDto)
             );
 
-            assertEquals("Bearer token is missing", exception.getMessage());
-        }
-
-        /**
-         * A valid Bearer header should return the token payload as-is.
-         */
-        @Test
-        void should_extract_bearer_token() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Bearer abc.def.ghi");
-
-            String token = JwtTokenUtil.extractBearerToken(httpServletRequest);
-
-            assertEquals("abc.def.ghi", token);
-        }
-
-        /**
-         * If a token contains exactly one dot and does not end with a dot,
-         * the utility appends the missing trailing dot.
-         *
-         * <p>This documents the current normalization behavior.
-         */
-        @Test
-        void should_append_trailing_dot_when_token_contains_exactly_one_dot() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Bearer abc.def");
-
-            String token = JwtTokenUtil.extractBearerToken(httpServletRequest);
-
-            assertEquals("abc.def.", token);
-        }
-
-        /**
-         * If the token already ends with a dot, it must not be modified.
-         */
-        @Test
-        void should_not_append_dot_when_token_already_ends_with_dot() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Bearer abc.def.");
-
-            String token = JwtTokenUtil.extractBearerToken(httpServletRequest);
-
-            assertEquals("abc.def.", token);
-        }
-    }
-
-    /**
-     * Tests related to JWT string generation.
-     */
-    @Nested
-    @DisplayName("generateToken")
-    class GenerateTokenTests {
-
-        /**
-         * Token generation requires a non-null token context.
-         */
-        @Test
-        void should_throw_when_token_context_is_null() {
-            IllegalArgumentException exception = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> JwtTokenUtil.generateToken(null)
+            assertEquals(
+                    "[GIL_002]The Subtype of the FlowConfigurationDto is not managed by the mapping function.",
+                    exception.getMessage()
             );
-
-            assertEquals("TokenContext is null", exception.getMessage());
-        }
-
-        /**
-         * A valid token context should be serialized into a JWT string.
-         */
-        @Test
-        void should_generate_token_from_token_context() {
-            TokenContext tokenContext = TokenContext.builder()
-                    .issuer("ap12345")
-                    .subject("ap54321")
-                    .build();
-
-            String token = JwtTokenUtil.generateToken(tokenContext);
-
-            // We do not assert the full token string format in detail.
-            // We only assert that generation returns a non-empty serialized JWT.
-            org.junit.jupiter.api.Assertions.assertNotNull(token);
-            org.junit.jupiter.api.Assertions.assertFalse(token.isBlank());
-        }
-    }
-
-    /**
-     * Tests related to JWT parsing and business validation.
-     */
-    @Nested
-    @DisplayName("parseToken")
-    class ParseTokenTests {
-
-        /**
-         * A generated token with valid issuer and subject should parse back
-         * into the expected {@link TokenContext}.
-         */
-        @Test
-        void should_parse_token_when_issuer_and_subject_match_expected_pattern() {
-            TokenContext original = TokenContext.builder()
-                    .issuer("ap12345")
-                    .subject("a012345")
-                    .build();
-
-            String rawToken = JwtTokenUtil.generateToken(original);
-
-            TokenContext parsed = JwtTokenUtil.parseToken(rawToken);
-
-            assertEquals("ap12345", parsed.issuer());
-            assertEquals("a012345", parsed.subject());
-        }
-
-        /**
-         * If issuer or subject does not match the expected regex,
-         * parsing must fail with a business exception.
-         */
-        @Test
-        void should_throw_when_issuer_or_subject_does_not_match_expected_pattern() {
-            TokenContext invalid = TokenContext.builder()
-                    .issuer("invalid-issuer")
-                    .subject("invalid-subject")
-                    .build();
-
-            String rawToken = JwtTokenUtil.generateToken(invalid);
-
-            GilFlowException exception = assertThrows(
-                    GilFlowException.class,
-                    () -> JwtTokenUtil.parseToken(rawToken)
-            );
-
-            assertEquals("[GIL_010]Invalid issuer and subject... do not match regex", exception.getMessage());
-        }
-
-        /**
-         * A malformed raw token must be rejected as an invalid JWT format.
-         */
-        @Test
-        void should_throw_when_raw_token_is_not_a_valid_jwt() {
-            IllegalArgumentException exception = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> JwtTokenUtil.parseToken("not-a-jwt")
-            );
-
-            assertEquals("Invalid JWT format", exception.getMessage());
-        }
-    }
-
-    /**
-     * Tests related to extracting and parsing token context from an HTTP request.
-     */
-    @Nested
-    @DisplayName("getTokenContext")
-    class GetTokenContextTests {
-
-        /**
-         * A valid Authorization header should be converted into the expected
-         * {@link TokenContext}.
-         */
-        @Test
-        void should_get_token_context_from_http_request() {
-            TokenContext original = TokenContext.builder()
-                    .issuer("ap12345")
-                    .subject("ap54321")
-                    .build();
-
-            String rawToken = JwtTokenUtil.generateToken(original);
-            when(httpServletRequest.getHeader("Authorization")).thenReturn("Bearer " + rawToken);
-
-            TokenContext tokenContext = JwtTokenUtil.getTokenContext(httpServletRequest);
-
-            assertEquals("ap12345", tokenContext.issuer());
-            assertEquals("ap54321", tokenContext.subject());
-        }
-
-        /**
-         * Any failure during extraction or parsing must be wrapped into
-         * a {@link GilFlowException} with a generic token error message.
-         */
-        @Test
-        void should_wrap_any_failure_into_gil_flow_exception() {
-            when(httpServletRequest.getHeader("Authorization")).thenReturn(null);
-
-            GilFlowException exception = assertThrows(
-                    GilFlowException.class,
-                    () -> JwtTokenUtil.getTokenContext(httpServletRequest)
-            );
-
-            assertEquals("[GIL_010]Failed to read or load token", exception.getMessage());
         }
     }
 }
 
 ```
+
+```
+
+class FlowConfigurationUtilTest {
+
+    @Nested
+    @DisplayName("ApiFlowConfiguration authorizedCodeAp validation")
+    class ApiFlowAuthorizedCodeApTests {
+
+        /**
+         * An API flow configuration must reject a null authorizedCodeAp list.
+         */
+        @Test
+        void should_throw_when_api_flow_authorized_code_ap_is_null() {
+            ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
+                    .flowId("api01")
+                    .direction(FlowDirection.IN)
+                    .authorizedCodeAp(null)
+                    .targetWebApiCode("target-api")
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]The AuthorizedCodeApi passed for flow api01is Null.",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * An API flow configuration must reject an empty authorizedCodeAp list.
+         */
+        @Test
+        void should_throw_when_api_flow_authorized_code_ap_is_empty() {
+            ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
+                    .flowId("api01")
+                    .direction(FlowDirection.IN)
+                    .authorizedCodeAp(List.of())
+                    .targetWebApiCode("target-api")
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]The AuthorizedCodeApi passed for flow api01is Null.",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * An API flow configuration should pass this specific validation when
+         * authorizedCodeAp is present and non-empty.
+         */
+        @Test
+        void should_not_throw_when_api_flow_authorized_code_ap_is_present() {
+            ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
+                    .flowId("api01")
+                    .direction(FlowDirection.IN)
+                    .authorizedCodeAp(List.of("all"))
+                    .targetWebApiCode("target-api")
+                    .build();
+
+            assertDoesNotThrow(() -> FlowConfigurationUtil.checkFlowConfiguration(configuration));
+        }
+    }
+
+    @Nested
+    @DisplayName("EventFlowConfiguration authorizedCodeAp validation")
+    class EventFlowAuthorizedCodeApTests {
+
+        /**
+         * An event flow configuration must reject a null authorizedCodeAp list.
+         */
+        @Test
+        void should_throw_when_event_flow_authorized_code_ap_is_null() {
+            EventFlowConfiguration configuration = EventFlowConfiguration.builder()
+                    .flowId("event01")
+                    .direction(FlowDirection.OUT)
+                    .authorizedCodeAp(null)
+                    .targetTopic("topic-1")
+                    .itrId("itr-1")
+                    .transformations(validEventTransformations())
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]The AuthorizedCodeAp passed for mapping is Null.",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * An event flow configuration must reject an empty authorizedCodeAp list.
+         */
+        @Test
+        void should_throw_when_event_flow_authorized_code_ap_is_empty() {
+            EventFlowConfiguration configuration = EventFlowConfiguration.builder()
+                    .flowId("event01")
+                    .direction(FlowDirection.OUT)
+                    .authorizedCodeAp(List.of())
+                    .targetTopic("topic-1")
+                    .itrId("itr-1")
+                    .transformations(validEventTransformations())
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]The AuthorizedCodeAp passed for mapping is Null.",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * An event flow configuration should pass this specific validation when
+         * authorizedCodeAp is present and non-empty.
+         */
+        @Test
+        void should_not_throw_when_event_flow_authorized_code_ap_is_present() {
+            EventFlowConfiguration configuration = EventFlowConfiguration.builder()
+                    .flowId("event01")
+                    .direction(FlowDirection.OUT)
+                    .authorizedCodeAp(List.of("ap12345"))
+                    .targetTopic("topic-1")
+                    .itrId("itr-1")
+                    .transformations(validEventTransformations())
+                    .build();
+
+            assertDoesNotThrow(() -> FlowConfigurationUtil.checkFlowConfiguration(configuration));
+        }
+    }
+
+    @Nested
+    @DisplayName("Interaction with other validation rules")
+    class AuthorizedCodeApOrderAndIsolationTests {
+
+        /**
+         * For API flows, when authorizedCodeAp is valid, other invalid fields should
+         * still be validated afterward.
+         *
+         * <p>This ensures the newly added authorizedCodeAp check does not prevent
+         * the rest of the validation logic from running in valid cases.
+         */
+        @Test
+        void should_continue_api_validation_after_authorized_code_ap_check() {
+            ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
+                    .flowId("api01")
+                    .direction(FlowDirection.IN)
+                    .authorizedCodeAp(List.of("all"))
+                    .targetWebApiCode("bad space value")
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]the target web api code field does not responect the excpected constraints for a FileFlowConfiguration object",
+                    exception.getMessage()
+            );
+        }
+
+        /**
+         * For event flows, when authorizedCodeAp is valid, later validations should
+         * still run and fail on invalid targetTopic if necessary.
+         */
+        @Test
+        void should_continue_event_validation_after_authorized_code_ap_check() {
+            EventFlowConfiguration configuration = EventFlowConfiguration.builder()
+                    .flowId("event01")
+                    .direction(FlowDirection.OUT)
+                    .authorizedCodeAp(List.of("ap12345"))
+                    .targetTopic("bad topic with spaces")
+                    .itrId("itr-1")
+                    .transformations(validEventTransformations())
+                    .build();
+
+            ConfigurationMalformedException exception = assertThrows(
+                    ConfigurationMalformedException.class,
+                    () -> FlowConfigurationUtil.checkFlowConfiguration(configuration)
+            );
+
+            assertEquals(
+                    "[GIL_002]The target Topic field does not respect the expected contraint for an eventFlowCofiguration object",
+                    exception.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Builds a minimal valid event transformation block so tests can focus on
+     * authorizedCodeAp validation without failing earlier on unrelated fields.
+     */
+    private EventFlowConfigurationTransformationConfiguration validEventTransformations() {
+        return EventFlowConfigurationTransformationConfiguration.builder()
+                .avro(new EventFlowConfigurationAvro("payload-type"))
+                .headers(EventFlowConfigurationHeaders.builder()
+                        .mainBusinessObjectId("mbid")
+                        .mainBusinessObjectType("mbtype")
+                        .bankCode("bank01")
+                        .build())
+                .alias(List.of(
+                        AliasingTransformationConfiguration.builder()
+                                .pointer("/payload/path")
+                                .build()
+                ))
+                .build();
+    }
+}
+
+```
+
+
 
