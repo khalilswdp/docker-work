@@ -1258,6 +1258,68 @@ class EstreemApiGatewayAdapterTest {
     }
 }
 ```
+
+```
+private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
+
+        List<String> authorizedCodeAp = apiFlowConfiguration.getAuthorizedCodeAp();
+        TokenContext tokenContext = flow.getRequest().getTokenContext();
+
+        String issuer = tokenContext.issuer();
+        String subject = tokenContext.subject();
+
+        if (authorizedCodeAp == null || authorizedCodeAp.isEmpty()) {
+            throw new GilCoreException(GilErrorCode.CORE_CONFIG_MALFORMED,
+                    "Aucune liste authorizedCodeAp n'est définie dans la configuration du flow");
+        }
+
+        boolean authorizedForAll = authorizedCodeAp.contains("all");
+        if (authorizedForAll) {
+            return;
+        }
+
+        boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN && authorizedCodeAp.contains(issuer);
+        if (authorizedIn) {
+            return;
+        }
+
+        boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT && issuer.equals("apigee") && authorizedCodeAp.contains(subject);
+        if (authorizedOut) {
+            return;
+        }
+
+        throw new GilCoreException(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, "la liste de sources dans la configuration du flow et la source du flow (" + issuer + ", " + subject + ") ne correspondent pas.");
+
+    }
+```
+
+```
+private static void validToken(TokenContext requestTokenContext) {
+        Pattern issuerPattern = Pattern.compile(ESTREEM_ISS_REGEX);
+
+        String issuer = requestTokenContext.issuer();
+        String subject = requestTokenContext.subject();
+
+        if (issuer == null) {
+            throw new GilFlowException(GilErrorCode.INVALID_TOKEN, "Invalid is mandatory... not present in the request");
+        }
+
+        Matcher issuerMatcher = issuerPattern.matcher(issuer);
+        if (!issuerMatcher.matches()) {
+            throw new GilFlowException(GilErrorCode.INVALID_TOKEN, "Invalid issuer: is mandatory... do not match regex");
+        }
+
+        if (subject != null) {
+            Pattern subjectPattern = Pattern.compile(ESTREEM_SUB_REGEX);
+            Matcher subjectMatcher = subjectPattern.matcher(subject);
+            if (!subjectMatcher.matches()) {
+                throw new GilFlowException(GilErrorCode.INVALID_TOKEN, "Invalid Subject: is optional... but if present, it should match subject regex");
+            }
+
+        }
+    }
+
+```
 MR / PR summary
 
 Enhanced unit tests for EstreemApiGatewayAdapter and ApiFlowProcessorStrategyImpl to improve readability, maintainability, and branch coverage.
