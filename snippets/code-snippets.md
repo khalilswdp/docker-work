@@ -10,6 +10,14 @@
  *     <li>forwarding behavior and execution order</li>
  *     <li>fail-fast behavior when authorization fails</li>
  * </ul>
+ *
+ * <p>For event flows, the authorization rule is:
+ * <ul>
+ *     <li>"all" always authorizes</li>
+ *     <li>otherwise only {@link FlowDirection#OUT} is authorized</li>
+ *     <li>for OUT, issuer must be authorized</li>
+ *     <li>for OUT, subject may be null, otherwise it must be authorized too</li>
+ * </ul>
  */
 class EventFlowProcessorStrategyImplTest {
 
@@ -34,11 +42,15 @@ class EventFlowProcessorStrategyImplTest {
     @Nested
     class AuthorizationFailures {
 
+        /**
+         * Verifies that a missing or empty authorized source list is treated as
+         * malformed configuration and stops the process immediately.
+         */
         @ParameterizedTest
         @MethodSource("com.example.EventFlowProcessorStrategyImplTest#malformedAuthorizedCodeApCases")
         void shouldThrowCoreConfigMalformed_whenAuthorizedCodeApIsMissing(List<String> authorizedCodeAp) {
             EventFlow flow = flow(
-                    FlowDirection.IN,
+                    FlowDirection.OUT,
                     VALID_ISSUER,
                     VALID_SUBJECT,
                     authorizedCodeAp,
@@ -58,13 +70,16 @@ class EventFlowProcessorStrategyImplTest {
             verifyNoInteractions(forwardFlowPort);
         }
 
+        /**
+         * Verifies that IN event flows are rejected when "all" is not configured.
+         */
         @Test
-        void shouldThrowAuthenticationTokenFailed_whenInFlowIssuerIsNotAuthorized() {
+        void shouldThrowAuthenticationTokenFailed_whenDirectionIsIn() {
             EventFlow flow = flow(
                     FlowDirection.IN,
-                    "ap99999",
+                    VALID_ISSUER,
                     VALID_SUBJECT,
-                    List.of("ap11111", "ap22222"),
+                    List.of(VALID_ISSUER, VALID_SUBJECT),
                     transformationConfiguration(),
                     INITIAL_PAYLOAD,
                     defaultHeaders(),
@@ -81,6 +96,9 @@ class EventFlowProcessorStrategyImplTest {
             verifyNoInteractions(forwardFlowPort);
         }
 
+        /**
+         * Verifies that an OUT flow is rejected when the issuer is not authorized.
+         */
         @Test
         void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsNotAuthorized() {
             EventFlow flow = flow(
@@ -104,6 +122,10 @@ class EventFlowProcessorStrategyImplTest {
             verifyNoInteractions(forwardFlowPort);
         }
 
+        /**
+         * Verifies that an OUT flow is rejected when the issuer is authorized
+         * but the non-null subject is not authorized.
+         */
         @Test
         void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsAuthorizedButSubjectIsNotAuthorized() {
             EventFlow flow = flow(
@@ -131,8 +153,12 @@ class EventFlowProcessorStrategyImplTest {
     @Nested
     class AuthorizationSuccessCases {
 
+        /**
+         * Verifies that the special source "all" authorizes the flow regardless
+         * of direction or token values.
+         */
         @Test
-        void shouldProcessFlow_whenAuthorizedForAll() {
+        void shouldProcessFlow_whenAuthorizedForAll_evenIfDirectionIsIn() {
             EventFlow flow = flow(
                     FlowDirection.IN,
                     "unknownIssuer",
@@ -150,44 +176,10 @@ class EventFlowProcessorStrategyImplTest {
             verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
-        @Test
-        void shouldProcessFlow_whenInFlowIssuerIsAuthorized() {
-            EventFlow flow = flow(
-                    FlowDirection.IN,
-                    VALID_ISSUER,
-                    "subject-not-in-list",
-                    List.of(VALID_ISSUER),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
-            );
-
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
-            verify(forwardFlowPort, times(1)).forwardFlow(flow);
-        }
-
-        @Test
-        void shouldProcessFlow_whenInFlowIssuerIsAuthorizedAndSubjectIsNull() {
-            EventFlow flow = flow(
-                    FlowDirection.IN,
-                    VALID_ISSUER,
-                    null,
-                    List.of(VALID_ISSUER),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
-            );
-
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
-            verify(forwardFlowPort, times(1)).forwardFlow(flow);
-        }
-
+        /**
+         * Verifies that an OUT flow is authorized when both issuer and subject
+         * are present in the authorized list.
+         */
         @Test
         void shouldProcessFlow_whenOutFlowIssuerAndSubjectAreAuthorized() {
             EventFlow flow = flow(
@@ -207,6 +199,10 @@ class EventFlowProcessorStrategyImplTest {
             verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
+        /**
+         * Verifies that an OUT flow is authorized when the issuer is authorized
+         * and the subject is null.
+         */
         @Test
         void shouldProcessFlow_whenOutFlowIssuerIsAuthorizedAndSubjectIsNull() {
             EventFlow flow = flow(
@@ -230,15 +226,19 @@ class EventFlowProcessorStrategyImplTest {
     @Nested
     class TransformationBehavior {
 
+        /**
+         * Verifies the full happy path:
+         * transformation is applied, payload is updated, then the flow is forwarded.
+         */
         @Test
         void shouldApplyTransformationUpdatePayloadAndForward() {
             EventFlowConfigurationTransformationConfiguration transformationConfiguration = transformationConfiguration();
 
             EventFlow flow = flow(
-                    FlowDirection.IN,
+                    FlowDirection.OUT,
                     VALID_ISSUER,
                     VALID_SUBJECT,
-                    List.of(VALID_ISSUER),
+                    List.of(VALID_ISSUER, VALID_SUBJECT),
                     transformationConfiguration,
                     INITIAL_PAYLOAD,
                     defaultHeaders(),
@@ -261,6 +261,9 @@ class EventFlowProcessorStrategyImplTest {
             verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
         }
 
+        /**
+         * Verifies the exact transformation context values built by the strategy.
+         */
         @Test
         void shouldBuildTransformationContextWithExpectedValues() {
             EventFlowConfigurationHeaders configuredHeaders = EventFlowConfigurationHeaders.builder()
@@ -310,6 +313,10 @@ class EventFlowProcessorStrategyImplTest {
             verify(forwardFlowPort).forwardFlow(flow);
         }
 
+        /**
+         * Verifies that the transformed payload is copied back into the flow
+         * before forwarding.
+         */
         @Test
         void shouldWriteBackTransformedPayloadToFlowBeforeForwarding() {
             EventFlow flow = flow(
@@ -342,6 +349,10 @@ class EventFlowProcessorStrategyImplTest {
     @Nested
     class FailFastBehavior {
 
+        /**
+         * Verifies that authorization failure stops processing immediately:
+         * no transformation, no payload update, and no forwarding.
+         */
         @Test
         void shouldNotTransformUpdatePayloadOrForward_whenAuthorizationFails() {
             EventFlow flow = flow(
@@ -362,6 +373,9 @@ class EventFlowProcessorStrategyImplTest {
         }
     }
 
+    /**
+     * Provides malformed authorized source lists.
+     */
     static Stream<Arguments> malformedAuthorizedCodeApCases() {
         return Stream.of(
                 Arguments.of((Object) null),
@@ -369,6 +383,10 @@ class EventFlowProcessorStrategyImplTest {
         );
     }
 
+    /**
+     * Creates a minimal valid transformation configuration for tests that do not
+     * need to focus on exact transformation setup values.
+     */
     private static EventFlowConfigurationTransformationConfiguration transformationConfiguration() {
         return EventFlowConfigurationTransformationConfiguration.builder()
                 .headers(EventFlowConfigurationHeaders.builder()
@@ -384,10 +402,16 @@ class EventFlowProcessorStrategyImplTest {
                 .build();
     }
 
+    /**
+     * Creates default event headers used by several tests.
+     */
     private static Map<String, List<String>> defaultHeaders() {
         return Map.of("x-header", List.of("value"));
     }
 
+    /**
+     * Creates a coherent {@link EventFlow} fixture for strategy tests.
+     */
     private static EventFlow flow(FlowDirection direction,
                                   String issuer,
                                   String subject,
@@ -412,7 +436,7 @@ class EventFlowProcessorStrategyImplTest {
         return EventFlow.builder()
                 .flowId(FLOW_ID)
                 .flowDirection(direction)
-                .configuration(configuration)
+                .flowConfiguration(configuration)
                 .tokenContext(tokenContext)
                 .payload(payload)
                 .headers(headers)
