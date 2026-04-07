@@ -1,28 +1,99 @@
 ```
 @Nested
-class AuthorizationSuccessCases {
+class AuthorizationFailures {
 
     /**
-     * Verifies successful authorization scenarios for API flows.
-     *
-     * <p>Covered cases:
-     * <ul>
-     *     <li>"all" authorizes any flow</li>
-     *     <li>IN flow authorized by issuer only</li>
-     *     <li>IN flow authorized by issuer with null subject</li>
-     *     <li>OUT flow authorized by issuer + subject</li>
-     *     <li>OUT flow authorized by issuer with null subject</li>
-     * </ul>
+     * Verifies that a missing or empty authorized source list is treated as
+     * malformed configuration.
      */
-    @ParameterizedTest(name = "{index} - {0}")
-    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#authorizedFlowCases")
-    void shouldProcessFlow_whenAuthorizationSucceeds(String ignoredCaseName, ApiFlow flow) {
-        strategy.doProcessFlow(flow, forwardFlowPort);
+    @ParameterizedTest(name = "{index} - malformed config: {0}")
+    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#malformedAuthorizedCodeApCases")
+    void shouldThrowCoreConfigMalformed_whenAuthorizedCodeApIsMissing(String ignoredCaseName,
+                                                                      List<String> authorizedCodeAp) {
+        ApiFlow flow = flow(
+                FlowDirection.IN,
+                "ap12345",
+                "sub123",
+                authorizedCodeAp,
+                null,
+                null
+        );
 
-        verify(forwardFlowPort).forwardFlow(flow);
+        GilCoreException exception = assertThrows(
+                GilCoreException.class,
+                () -> strategy.doProcessFlow(flow, forwardFlowPort)
+        );
+
+        assertEquals(GilErrorCode.CORE_CONFIG_MALFORMED, exception.getCode());
         verifyNoInteractions(applyTransformationPort);
+        verifyNoInteractions(forwardFlowPort);
+    }
+
+    /**
+     * Verifies that unauthorized flows are rejected before any transformation
+     * or forwarding is attempted.
+     */
+    @ParameterizedTest(name = "{index} - auth failure: {0}")
+    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#unauthorizedFlowCases")
+    void shouldThrowAuthenticationTokenFailed_whenFlowIsNotAuthorized(String ignoredCaseName,
+                                                                      ApiFlow flow) {
+        GilCoreException exception = assertThrows(
+                GilCoreException.class,
+                () -> strategy.doProcessFlow(flow, forwardFlowPort)
+        );
+
+        assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
+        verifyNoInteractions(applyTransformationPort);
+        verifyNoInteractions(forwardFlowPort);
     }
 }
+
+
+static Stream<Arguments> malformedAuthorizedCodeApCases() {
+    return Stream.of(
+            Arguments.of("authorizedCodeAp is null", null),
+            Arguments.of("authorizedCodeAp is empty", List.of())
+    );
+}
+
+static Stream<Arguments> unauthorizedFlowCases() {
+    return Stream.of(
+            Arguments.of(
+                    "IN flow with unauthorized issuer",
+                    flow(
+                            FlowDirection.IN,
+                            "ap99999",
+                            "sub123",
+                            List.of("ap12345", "ap67890"),
+                            null,
+                            null
+                    )
+            ),
+            Arguments.of(
+                    "OUT flow with unauthorized issuer",
+                    flow(
+                            FlowDirection.OUT,
+                            "ap99999",
+                            "partner01",
+                            List.of("ap12345", "partner01"),
+                            null,
+                            null
+                    )
+            ),
+            Arguments.of(
+                    "OUT flow with authorized issuer but unauthorized subject",
+                    flow(
+                            FlowDirection.OUT,
+                            "ap12345",
+                            "partner99",
+                            List.of("ap12345", "partner01", "partner02"),
+                            null,
+                            null
+                    )
+            )
+    );
+}
+
 ```
 MR / PR summary
 
