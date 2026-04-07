@@ -1,98 +1,86 @@
 ```
-@Nested
-class AuthorizationFailures {
-
-    /**
-     * Verifies that a missing or empty authorized source list is treated as
-     * malformed configuration.
-     */
-    @ParameterizedTest(name = "{index} - malformed config: {0}")
-    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#malformedAuthorizedCodeApCases")
-    void shouldThrowCoreConfigMalformed_whenAuthorizedCodeApIsMissing(String ignoredCaseName,
-                                                                      List<String> authorizedCodeAp) {
-        ApiFlow flow = flow(
-                FlowDirection.IN,
-                "ap12345",
-                "sub123",
-                authorizedCodeAp,
-                null,
-                null
-        );
-
-        GilCoreException exception = assertThrows(
-                GilCoreException.class,
-                () -> strategy.doProcessFlow(flow, forwardFlowPort)
-        );
-
-        assertEquals(GilErrorCode.CORE_CONFIG_MALFORMED, exception.getCode());
-        verifyNoInteractions(applyTransformationPort);
-        verifyNoInteractions(forwardFlowPort);
-    }
-
-    /**
-     * Verifies that unauthorized flows are rejected before any transformation
-     * or forwarding is attempted.
-     */
-    @ParameterizedTest(name = "{index} - auth failure: {0}")
-    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#unauthorizedFlowCases")
-    void shouldThrowAuthenticationTokenFailed_whenFlowIsNotAuthorized(String ignoredCaseName,
-                                                                      ApiFlow flow) {
-        GilCoreException exception = assertThrows(
-                GilCoreException.class,
-                () -> strategy.doProcessFlow(flow, forwardFlowPort)
-        );
-
-        assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-        verifyNoInteractions(applyTransformationPort);
-        verifyNoInteractions(forwardFlowPort);
-    }
-}
-
-
-static Stream<Arguments> malformedAuthorizedCodeApCases() {
-    return Stream.of(
-            Arguments.of("authorizedCodeAp is null", null),
-            Arguments.of("authorizedCodeAp is empty", List.of())
-    );
-}
-
-static Stream<Arguments> unauthorizedFlowCases() {
-    return Stream.of(
-            Arguments.of(
-                    "IN flow with unauthorized issuer",
-                    flow(
-                            FlowDirection.IN,
-                            "ap99999",
-                            "sub123",
-                            List.of("ap12345", "ap67890"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with unauthorized issuer",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap99999",
-                            "partner01",
-                            List.of("ap12345", "partner01"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with authorized issuer but unauthorized subject",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap12345",
-                            "partner99",
-                            List.of("ap12345", "partner01", "partner02"),
-                            null,
-                            null
-                    )
-            )
-    );
-}
+/**
+ * Validates whether the given API flow is authorized to be processed
+ * based on its configuration and token context.
+ *
+ * <p>The authorization logic follows these rules:
+ *
+ * <ul>
+ *     <li>If {@code authorizedCodeAp} is {@code null} or empty, the configuration is considered invalid
+ *     and a {@link GilCoreException} with code {@link GilErrorCode#CORE_CONFIG_MALFORMED} is thrown.</li>
+ *
+ *     <li>If the list contains the special value {@code "all"}, the flow is always authorized
+ *     regardless of direction, issuer, or subject.</li>
+ *
+ *     <li><b>IN flow:</b>
+ *         <ul>
+ *             <li>The flow is authorized if and only if the token {@code issuer} is present in
+ *             {@code authorizedCodeAp}.</li>
+ *             <li>The {@code subject} is ignored for authorization in this case.</li>
+ *         </ul>
+ *     </li>
+ *
+ *     <li><b>OUT flow:</b>
+ *         <ul>
+ *             <li>The flow is authorized if:
+ *                 <ul>
+ *                     <li>{@code issuer} is present in {@code authorizedCodeAp}, and</li>
+ *                     <li>{@code subject} is either {@code null} or also present in {@code authorizedCodeAp}.</li>
+ *                 </ul>
+ *             </li>
+ *         </ul>
+ *     </li>
+ * </ul>
+ *
+ * <p>If none of the above conditions are met, the flow is rejected and a
+ * {@link GilCoreException} with code {@link GilErrorCode#AUTHENTICATION_TOKEN_FAILED} is thrown.
+ *
+ * @param flow the API flow being processed, containing direction and token context
+ * @param apiFlowConfiguration the flow configuration containing authorized sources
+ *
+ * @throws GilCoreException if the configuration is malformed or the flow is not authorized
+ */
+ 
+ /**
+ * Validates whether the given event flow is authorized to be processed
+ * based on its configuration and token context.
+ *
+ * <p>The authorization logic follows these rules:
+ *
+ * <ul>
+ *     <li>If {@code authorizedCodeAp} is {@code null} or empty, the configuration is considered invalid
+ *     and a {@link GilCoreException} with code {@link GilErrorCode#CORE_CONFIG_MALFORMED} is thrown.</li>
+ *
+ *     <li>If the list contains the special value {@code "all"}, the flow is always authorized
+ *     regardless of direction, issuer, or subject.</li>
+ *
+ *     <li><b>Event flows are only supported in {@link FlowDirection#OUT} direction.</b>
+ *         <ul>
+ *             <li>If the flow direction is {@code IN} and {@code "all"} is not configured,
+ *             the flow is rejected.</li>
+ *         </ul>
+ *     </li>
+ *
+ *     <li><b>OUT flow:</b>
+ *         <ul>
+ *             <li>The flow is authorized if:
+ *                 <ul>
+ *                     <li>{@code issuer} is present in {@code authorizedCodeAp}, and</li>
+ *                     <li>{@code subject} is either {@code null} or also present in {@code authorizedCodeAp}.</li>
+ *                 </ul>
+ *             </li>
+ *         </ul>
+ *     </li>
+ * </ul>
+ *
+ * <p>If none of the above conditions are met, the flow is rejected and a
+ * {@link GilCoreException} with code {@link GilErrorCode#AUTHENTICATION_TOKEN_FAILED} is thrown.
+ *
+ * @param flow the event flow being processed, containing direction and token context
+ * @param flowConfiguration the flow configuration containing authorized sources
+ *
+ * @throws GilCoreException if the configuration is malformed or the flow is not authorized
+ */
 
 ```
 MR / PR summary
