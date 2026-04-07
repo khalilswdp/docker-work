@@ -1,83 +1,51 @@
 ```
-private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
-
-        List<String> authorizedCodeAp = apiFlowConfiguration.getAuthorizedCodeAp();
-        TokenContext tokenContext = flow.getRequest().getTokenContext();
-
-        String issuer = tokenContext.issuer();
-        String subject = tokenContext.subject();
-
-        if (authorizedCodeAp == null || authorizedCodeAp.isEmpty()) {
-            throw new GilCoreException(GilErrorCode.CORE_CONFIG_MALFORMED,
-                    "Aucune liste authorizedCodeAp n'est définie dans la configuration du flow");
-        }
-
-        boolean authorizedForAll = authorizedCodeAp.contains("all");
-        if (authorizedForAll) {
-            return;
-        }
-
-        boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN
-                && authorizedCodeAp.contains(issuer);
-
-
-        if (authorizedIn) {
-            return;
-        }
-
-        boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
-                && (authorizedCodeAp.contains(issuer)
-                && (subject == null || authorizedCodeAp.contains(subject)));
-        if (authorizedOut) {
-            return;
-        }
-
-        throw new GilCoreException(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, "la liste de sources dans la configuration du flow et la source du flow (" + issuer + ", " + subject + ") ne correspondent pas.");
-
-    }
-
-```
-
-```
-
 /**
- * Unit tests for {@link ApiFlowProcessorStrategyImpl}.
+ * Unit tests for {@link EventFlowProcessorStrategyImpl}.
  *
- * <p>This suite validates the orchestration responsibilities of the strategy:
+ * <p>This suite validates:
  * <ul>
- *     <li>authorization checks before any processing</li>
- *     <li>request transformation triggering</li>
- *     <li>flow forwarding</li>
- *     <li>response transformation triggering</li>
- *     <li>execution order across these steps</li>
+ *     <li>authorization rules for event flows</li>
+ *     <li>transformation context construction</li>
+ *     <li>payload update after transformation</li>
+ *     <li>forwarding behavior and execution order</li>
+ *     <li>fail-fast behavior when authorization fails</li>
  * </ul>
  */
-class ApiFlowProcessorStrategyImplTest {
+class EventFlowProcessorStrategyImplTest {
+
+    private static final String FLOW_ID = "flow123";
+    private static final String VALID_ISSUER = "ap12345";
+    private static final String VALID_SUBJECT = "sub123";
+    private static final String INITIAL_PAYLOAD = "initial-payload";
+    private static final String TRANSFORMED_PAYLOAD = "transformed-payload";
+    private static final long RECEIVED_EVENT_TIMESTAMP = 123456789L;
 
     private ApplyTransformationPort applyTransformationPort;
     private ForwardFlowPort forwardFlowPort;
-    private ApiFlowProcessorStrategyImpl strategy;
+    private EventFlowProcessorStrategyImpl strategy;
 
     @BeforeEach
     void setUp() {
         applyTransformationPort = mock(ApplyTransformationPort.class);
         forwardFlowPort = mock(ForwardFlowPort.class);
-        strategy = new ApiFlowProcessorStrategyImpl(applyTransformationPort);
+        strategy = new EventFlowProcessorStrategyImpl(applyTransformationPort);
     }
 
     @Nested
     class AuthorizationFailures {
 
         @ParameterizedTest
-        @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#malformedAuthorizedCodeApCases")
+        @MethodSource("com.example.EventFlowProcessorStrategyImplTest#malformedAuthorizedCodeApCases")
         void shouldThrowCoreConfigMalformed_whenAuthorizedCodeApIsMissing(List<String> authorizedCodeAp) {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
+                    VALID_ISSUER,
+                    VALID_SUBJECT,
                     authorizedCodeAp,
-                    null,
-                    null
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             GilCoreException exception = assertThrows(
@@ -92,13 +60,15 @@ class ApiFlowProcessorStrategyImplTest {
 
         @Test
         void shouldThrowAuthenticationTokenFailed_whenInFlowIssuerIsNotAuthorized() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
                     "ap99999",
-                    "sub123",
-                    List.of("ap12345", "ap67890"),
-                    null,
-                    null
+                    VALID_SUBJECT,
+                    List.of("ap11111", "ap22222"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             GilCoreException exception = assertThrows(
@@ -113,13 +83,15 @@ class ApiFlowProcessorStrategyImplTest {
 
         @Test
         void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsNotAuthorized() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.OUT,
                     "ap99999",
                     "partner01",
-                    List.of("ap12345", "partner01"),
-                    null,
-                    null
+                    List.of(VALID_ISSUER, "partner01"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             GilCoreException exception = assertThrows(
@@ -134,13 +106,15 @@ class ApiFlowProcessorStrategyImplTest {
 
         @Test
         void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsAuthorizedButSubjectIsNotAuthorized() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.OUT,
-                    "ap12345",
+                    VALID_ISSUER,
                     "partner99",
-                    List.of("ap12345", "partner01", "partner02"),
-                    null,
-                    null
+                    List.of(VALID_ISSUER, "partner01", "partner02"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             GilCoreException exception = assertThrows(
@@ -159,87 +133,97 @@ class ApiFlowProcessorStrategyImplTest {
 
         @Test
         void shouldProcessFlow_whenAuthorizedForAll() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
                     "unknownIssuer",
                     "unknownSubject",
                     List.of("all"),
-                    null,
-                    null
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
+            verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
         @Test
         void shouldProcessFlow_whenInFlowIssuerIsAuthorized() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
-                    "ap12345",
-                    "sub999",
-                    List.of("ap12345"),
-                    null,
-                    null
+                    VALID_ISSUER,
+                    "subject-not-in-list",
+                    List.of(VALID_ISSUER),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
+            verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
         @Test
         void shouldProcessFlow_whenInFlowIssuerIsAuthorizedAndSubjectIsNull() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
-                    "ap12345",
+                    VALID_ISSUER,
                     null,
-                    List.of("ap12345"),
-                    null,
-                    null
+                    List.of(VALID_ISSUER),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
+            verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
         @Test
         void shouldProcessFlow_whenOutFlowIssuerAndSubjectAreAuthorized() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.OUT,
-                    "ap12345",
+                    VALID_ISSUER,
                     "partner01",
-                    List.of("ap12345", "partner01", "partner02"),
-                    null,
-                    null
+                    List.of(VALID_ISSUER, "partner01", "partner02"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
+            verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
 
         @Test
         void shouldProcessFlow_whenOutFlowIssuerIsAuthorizedAndSubjectIsNull() {
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.OUT,
-                    "ap12345",
+                    VALID_ISSUER,
                     null,
-                    List.of("ap12345"),
-                    null,
-                    null
+                    List.of(VALID_ISSUER),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
+            verify(forwardFlowPort, times(1)).forwardFlow(flow);
         }
     }
 
@@ -247,110 +231,134 @@ class ApiFlowProcessorStrategyImplTest {
     class TransformationBehavior {
 
         @Test
-        void shouldApplyRequestTransformationThenForwardThenApplyResponseTransformation() {
-            ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/req").build()))
-                    .build();
+        void shouldApplyTransformationUpdatePayloadAndForward() {
+            EventFlowConfigurationTransformationConfiguration transformationConfiguration = transformationConfiguration();
 
-            ApiFlowConfigurationResponse responseTransformations = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/res").build()))
-                    .build();
-
-            ApiFlow flow = flow(
+            EventFlow flow = flow(
                     FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    requestTransformations,
-                    responseTransformations
+                    VALID_ISSUER,
+                    VALID_SUBJECT,
+                    List.of(VALID_ISSUER),
+                    transformationConfiguration,
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
+
+            doAnswer(invocation -> {
+                EventFlowTransformationCtx ctx = invocation.getArgument(0);
+                ctx.setEventPayload(TRANSFORMED_PAYLOAD);
+                return null;
+            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
             InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-
-            inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowRequestTransformationCtx requestCtx
-                            && requestCtx.getApiFlowRequest().equals(flow.getRequest())
-                            && requestCtx.getAlias().equals(requestTransformations.getAlias())
-                            && requestCtx.getDirection() == FlowDirection.IN
-            ));
-
+            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
             inOrder.verify(forwardFlowPort).forwardFlow(flow);
 
-            inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowResponseTransformationCtx responseCtx
-                            && responseCtx.getApiFlowResponse().equals(flow.getResponse())
-                            && responseCtx.getAlias().equals(responseTransformations.getAlias())
-                            && responseCtx.getDirection() == FlowDirection.IN
-            ));
+            assertEquals(TRANSFORMED_PAYLOAD, flow.getPayload());
+            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
         }
 
         @Test
-        void shouldApplyOnlyRequestTransformation_whenResponseTransformationIsNull() {
-            ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/req").build()))
+        void shouldBuildTransformationContextWithExpectedValues() {
+            EventFlowConfigurationHeaders configuredHeaders = EventFlowConfigurationHeaders.builder()
+                    .mainBusinessObjectId("id-path")
+                    .mainBusinessObjectType("type-path")
+                    .bankCode("bank-path")
                     .build();
 
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    requestTransformations,
-                    null
+            EventFlowConfigurationTransformationConfiguration transformationConfiguration =
+                    EventFlowConfigurationTransformationConfiguration.builder()
+                            .headers(configuredHeaders)
+                            .alias(List.of(
+                                    AliasingTransformationConfiguration.builder()
+                                            .pointer("alias-path")
+                                            .build()
+                            ))
+                            .build();
+
+            Map<String, List<String>> headers = Map.of("event-type", List.of("customer-created"));
+
+            EventFlow flow = flow(
+                    FlowDirection.OUT,
+                    VALID_ISSUER,
+                    "partner01",
+                    List.of(VALID_ISSUER, "partner01"),
+                    transformationConfiguration,
+                    "event-payload",
+                    headers,
+                    999L
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(applyTransformationPort, times(1)).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowRequestTransformationCtx
-            ));
+            ArgumentCaptor<EventFlowTransformationCtx> captor =
+                    ArgumentCaptor.forClass(EventFlowTransformationCtx.class);
+
+            verify(applyTransformationPort).applyTransformation(captor.capture());
+
+            EventFlowTransformationCtx ctx = captor.getValue();
+            assertEquals(transformationConfiguration.getAlias(), ctx.getAlias());
+            assertEquals(configuredHeaders, ctx.getEventFlowConfigurationHeaders());
+            assertEquals("event-payload", ctx.getEventPayload());
+            assertEquals(headers, ctx.getHeaders());
+            assertEquals(999L, ctx.getReceivedEventTimestamp());
+
+            assertEquals("event-payload", flow.getPayload());
             verify(forwardFlowPort).forwardFlow(flow);
         }
 
         @Test
-        void shouldApplyOnlyResponseTransformation_whenRequestTransformationIsNull() {
-            ApiFlowConfigurationResponse responseTransformations = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/res").build()))
-                    .build();
-
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    null,
-                    responseTransformations
+        void shouldWriteBackTransformedPayloadToFlowBeforeForwarding() {
+            EventFlow flow = flow(
+                    FlowDirection.OUT,
+                    VALID_ISSUER,
+                    "partner01",
+                    List.of(VALID_ISSUER, "partner01"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    Map.of(),
+                    42L
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
+
+            doAnswer(invocation -> {
+                EventFlowTransformationCtx ctx = invocation.getArgument(0);
+                ctx.setEventPayload("updated-by-transformation");
+                return null;
+            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
 
             strategy.doProcessFlow(flow, forwardFlowPort);
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verify(applyTransformationPort, times(1)).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowResponseTransformationCtx
-            ));
+            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
+            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            inOrder.verify(forwardFlowPort).forwardFlow(flow);
+
+            assertEquals("updated-by-transformation", flow.getPayload());
         }
+    }
+
+    @Nested
+    class FailFastBehavior {
 
         @Test
-        void shouldOnlyForward_whenNoTransformationsAreConfigured() {
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    null,
-                    null
+        void shouldNotTransformUpdatePayloadOrForward_whenAuthorizationFails() {
+            EventFlow flow = flow(
+                    FlowDirection.OUT,
+                    VALID_ISSUER,
+                    "forbidden-subject",
+                    List.of(VALID_ISSUER, "allowed-subject"),
+                    transformationConfiguration(),
+                    INITIAL_PAYLOAD,
+                    defaultHeaders(),
+                    RECEIVED_EVENT_TIMESTAMP
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
 
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
+            assertEquals(INITIAL_PAYLOAD, flow.getPayload());
         }
     }
 
@@ -361,35 +369,54 @@ class ApiFlowProcessorStrategyImplTest {
         );
     }
 
-    private static ApiFlow flow(FlowDirection direction,
-                                String issuer,
-                                String subject,
-                                List<String> authorizedCodeAp,
-                                ApiFlowConfigurationRequest requestTransformations,
-                                ApiFlowConfigurationResponse responseTransformations) {
+    private static EventFlowConfigurationTransformationConfiguration transformationConfiguration() {
+        return EventFlowConfigurationTransformationConfiguration.builder()
+                .headers(EventFlowConfigurationHeaders.builder()
+                        .mainBusinessObjectId("id-path")
+                        .mainBusinessObjectType("type-path")
+                        .bankCode("bank-path")
+                        .build())
+                .alias(List.of(
+                        AliasingTransformationConfiguration.builder()
+                                .pointer("alias-path")
+                                .build()
+                ))
+                .build();
+    }
+
+    private static Map<String, List<String>> defaultHeaders() {
+        return Map.of("x-header", List.of("value"));
+    }
+
+    private static EventFlow flow(FlowDirection direction,
+                                  String issuer,
+                                  String subject,
+                                  List<String> authorizedCodeAp,
+                                  EventFlowConfigurationTransformationConfiguration transformations,
+                                  String payload,
+                                  Map<String, List<String>> headers,
+                                  long receivedEventTimestamp) {
 
         TokenContext tokenContext = TokenContext.builder()
                 .issuer(issuer)
                 .subject(subject)
                 .build();
 
-        ApiFlowRequest request = ApiFlowRequest.builder()
-                .tokenContext(tokenContext)
-                .build();
-
-        ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
-                .flowId("flow123")
+        EventFlowConfiguration configuration = EventFlowConfiguration.builder()
+                .flowId(FLOW_ID)
                 .direction(direction)
                 .authorizedCodeAp(authorizedCodeAp)
-                .requestTransformations(requestTransformations)
-                .responseTransformations(responseTransformations)
+                .transformations(transformations)
                 .build();
 
-        return ApiFlow.builder()
-                .flowId("flow123")
+        return EventFlow.builder()
+                .flowId(FLOW_ID)
                 .flowDirection(direction)
                 .configuration(configuration)
-                .request(request)
+                .tokenContext(tokenContext)
+                .payload(payload)
+                .headers(headers)
+                .receivedEventTimestamp(receivedEventTimestamp)
                 .build();
     }
 }
