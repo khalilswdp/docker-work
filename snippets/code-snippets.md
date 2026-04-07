@@ -1,136 +1,27 @@
 ```
-/**
- * Provides authorized API flow scenarios.
- *
- * @return successful authorization cases for both IN and OUT directions
- */
-static Stream<Arguments> authorizedFlowCases() {
-    return Stream.of(
-            Arguments.of(
-                    "authorized for all",
-                    flow(
-                            FlowDirection.IN,
-                            "unknownIssuer",
-                            "unknownSubject",
-                            List.of("all"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "IN flow with authorized issuer",
-                    flow(
-                            FlowDirection.IN,
-                            "ap12345",
-                            "sub999",
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "IN flow with authorized issuer and null subject",
-                    flow(
-                            FlowDirection.IN,
-                            "ap12345",
-                            null,
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with authorized issuer and subject",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap12345",
-                            "partner01",
-                            List.of("ap12345", "partner01", "partner02"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with authorized issuer and null subject",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap12345",
-                            null,
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            )
-    );
-}
+@Nested
+class AuthorizationSuccessCases {
 
+    /**
+     * Verifies successful authorization scenarios for API flows.
+     *
+     * <p>Covered cases:
+     * <ul>
+     *     <li>"all" authorizes any flow</li>
+     *     <li>IN flow authorized by issuer only</li>
+     *     <li>IN flow authorized by issuer with null subject</li>
+     *     <li>OUT flow authorized by issuer + subject</li>
+     *     <li>OUT flow authorized by issuer with null subject</li>
+     * </ul>
+     */
+    @ParameterizedTest(name = "{index} - {0}")
+    @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#authorizedFlowCases")
+    void shouldProcessFlow_whenAuthorizationSucceeds(String ignoredCaseName, ApiFlow flow) {
+        strategy.doProcessFlow(flow, forwardFlowPort);
 
-```
-
-```
-/**
- * Provides authorized API flow scenarios.
- *
- * @return successful authorization cases for both IN and OUT directions
- */
-static Stream<Arguments> authorizedFlowCases() {
-    return Stream.of(
-            Arguments.of(
-                    "authorized for all",
-                    flow(
-                            FlowDirection.IN,
-                            "unknownIssuer",
-                            "unknownSubject",
-                            List.of("all"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "IN flow with authorized issuer",
-                    flow(
-                            FlowDirection.IN,
-                            "ap12345",
-                            "sub999",
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "IN flow with authorized issuer and null subject",
-                    flow(
-                            FlowDirection.IN,
-                            "ap12345",
-                            null,
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with authorized issuer and subject",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap12345",
-                            "partner01",
-                            List.of("ap12345", "partner01", "partner02"),
-                            null,
-                            null
-                    )
-            ),
-            Arguments.of(
-                    "OUT flow with authorized issuer and null subject",
-                    flow(
-                            FlowDirection.OUT,
-                            "ap12345",
-                            null,
-                            List.of("ap12345"),
-                            null,
-                            null
-                    )
-            )
-    );
+        verify(forwardFlowPort).forwardFlow(flow);
+        verifyNoInteractions(applyTransformationPort);
+    }
 }
 ```
 MR / PR summary
