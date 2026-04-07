@@ -1,4 +1,44 @@
 ```
+private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
+
+        List<String> authorizedCodeAp = apiFlowConfiguration.getAuthorizedCodeAp();
+        TokenContext tokenContext = flow.getRequest().getTokenContext();
+
+        String issuer = tokenContext.issuer();
+        String subject = tokenContext.subject();
+
+        if (authorizedCodeAp == null || authorizedCodeAp.isEmpty()) {
+            throw new GilCoreException(GilErrorCode.CORE_CONFIG_MALFORMED,
+                    "Aucune liste authorizedCodeAp n'est définie dans la configuration du flow");
+        }
+
+        boolean authorizedForAll = authorizedCodeAp.contains("all");
+        if (authorizedForAll) {
+            return;
+        }
+
+        boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN
+                && authorizedCodeAp.contains(issuer);
+
+
+        if (authorizedIn) {
+            return;
+        }
+
+        boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
+                && (authorizedCodeAp.contains(issuer)
+                && (subject == null || authorizedCodeAp.contains(subject)));
+        if (authorizedOut) {
+            return;
+        }
+
+        throw new GilCoreException(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, "la liste de sources dans la configuration du flow et la source du flow (" + issuer + ", " + subject + ") ne correspondent pas.");
+
+    }
+
+```
+
+```
 
 /**
  * Unit tests for {@link ApiFlowProcessorStrategyImpl}.
@@ -11,9 +51,6 @@
  *     <li>response transformation triggering</li>
  *     <li>execution order across these steps</li>
  * </ul>
- *
- * <p>The tests are grouped by behavior using nested classes so that authorization
- * and transformation concerns remain easy to locate and evolve independently.
  */
 class ApiFlowProcessorStrategyImplTest {
 
@@ -21,9 +58,6 @@ class ApiFlowProcessorStrategyImplTest {
     private ForwardFlowPort forwardFlowPort;
     private ApiFlowProcessorStrategyImpl strategy;
 
-    /**
-     * Creates a new strategy instance and mocks its collaborators before each test.
-     */
     @BeforeEach
     void setUp() {
         applyTransformationPort = mock(ApplyTransformationPort.class);
@@ -31,12 +65,6 @@ class ApiFlowProcessorStrategyImplTest {
         strategy = new ApiFlowProcessorStrategyImpl(applyTransformationPort);
     }
 
-    /**
-     * Tests for authorization failures.
-     *
-     * <p>These scenarios verify that processing stops immediately when the flow
-     * is not authorized or when the configuration is malformed.
-     */
     @Nested
     class AuthorizationFailures {
 
@@ -84,33 +112,12 @@ class ApiFlowProcessorStrategyImplTest {
         }
 
         @Test
-        void shouldThrowAuthenticationTokenFailed_whenInFlowIssuerIsAuthorizedButSubjectIsNotAuthorized() {
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub999",
-                    List.of("ap12345", "sub123"),
-                    null,
-                    null
-            );
-
-            GilCoreException exception = assertThrows(
-                    GilCoreException.class,
-                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
-            );
-
-            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-            verifyNoInteractions(applyTransformationPort);
-            verifyNoInteractions(forwardFlowPort);
-        }
-
-        @Test
-        void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsNotApigee() {
+        void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsNotAuthorized() {
             ApiFlow flow = flow(
                     FlowDirection.OUT,
-                    "ap12345",
+                    "ap99999",
                     "partner01",
-                    List.of("partner01"),
+                    List.of("ap12345", "partner01"),
                     null,
                     null
             );
@@ -126,12 +133,12 @@ class ApiFlowProcessorStrategyImplTest {
         }
 
         @Test
-        void shouldThrowAuthenticationTokenFailed_whenOutFlowSubjectIsNotAuthorized() {
+        void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsAuthorizedButSubjectIsNotAuthorized() {
             ApiFlow flow = flow(
                     FlowDirection.OUT,
-                    "apigee",
+                    "ap12345",
                     "partner99",
-                    List.of("partner01", "partner02"),
+                    List.of("ap12345", "partner01", "partner02"),
                     null,
                     null
             );
@@ -147,13 +154,6 @@ class ApiFlowProcessorStrategyImplTest {
         }
     }
 
-
-    /**
-     * Tests for successful authorization paths.
-     *
-     * <p>These scenarios verify that, once authorization passes, the strategy
-     * proceeds to forward the flow.
-     */
     @Nested
     class AuthorizationSuccessCases {
 
@@ -175,12 +175,12 @@ class ApiFlowProcessorStrategyImplTest {
         }
 
         @Test
-        void shouldProcessFlow_whenInFlowIssuerAndSubjectAreAuthorized() {
+        void shouldProcessFlow_whenInFlowIssuerIsAuthorized() {
             ApiFlow flow = flow(
                     FlowDirection.IN,
                     "ap12345",
-                    "sub123",
-                    List.of("ap12345", "sub123"),
+                    "sub999",
+                    List.of("ap12345"),
                     null,
                     null
             );
@@ -209,12 +209,29 @@ class ApiFlowProcessorStrategyImplTest {
         }
 
         @Test
-        void shouldProcessFlow_whenOutFlowIssuerIsApigeeAndSubjectIsAuthorized() {
+        void shouldProcessFlow_whenOutFlowIssuerAndSubjectAreAuthorized() {
             ApiFlow flow = flow(
                     FlowDirection.OUT,
-                    "apigee",
+                    "ap12345",
                     "partner01",
-                    List.of("partner01", "partner02"),
+                    List.of("ap12345", "partner01", "partner02"),
+                    null,
+                    null
+            );
+
+            strategy.doProcessFlow(flow, forwardFlowPort);
+
+            verify(forwardFlowPort).forwardFlow(flow);
+            verifyNoInteractions(applyTransformationPort);
+        }
+
+        @Test
+        void shouldProcessFlow_whenOutFlowIssuerIsAuthorizedAndSubjectIsNull() {
+            ApiFlow flow = flow(
+                    FlowDirection.OUT,
+                    "ap12345",
+                    null,
+                    List.of("ap12345"),
                     null,
                     null
             );
@@ -226,22 +243,9 @@ class ApiFlowProcessorStrategyImplTest {
         }
     }
 
-    /**
-     * Tests focused on request/response transformation behavior and execution order.
-     */
     @Nested
     class TransformationBehavior {
 
-        /**
-         * Verifies the full happy path:
-         * <ol>
-         *     <li>request transformation is applied</li>
-         *     <li>flow is forwarded</li>
-         *     <li>response transformation is applied</li>
-         * </ol>
-         *
-         * <p>The test also verifies the content of the transformation contexts.
-         */
         @Test
         void shouldApplyRequestTransformationThenForwardThenApplyResponseTransformation() {
             ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
@@ -256,7 +260,7 @@ class ApiFlowProcessorStrategyImplTest {
                     FlowDirection.IN,
                     "ap12345",
                     "sub123",
-                    List.of("ap12345", "sub123"),
+                    List.of("ap12345"),
                     requestTransformations,
                     responseTransformations
             );
@@ -266,7 +270,6 @@ class ApiFlowProcessorStrategyImplTest {
 
             InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
 
-            // Request transformation must happen before the flow is forwarded.
             inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
                     ctx instanceof ApiFlowRequestTransformationCtx requestCtx
                             && requestCtx.getApiFlowRequest().equals(flow.getRequest())
@@ -276,7 +279,6 @@ class ApiFlowProcessorStrategyImplTest {
 
             inOrder.verify(forwardFlowPort).forwardFlow(flow);
 
-            // Response transformation must happen only after the downstream call.
             inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
                     ctx instanceof ApiFlowResponseTransformationCtx responseCtx
                             && responseCtx.getApiFlowResponse().equals(flow.getResponse())
@@ -285,10 +287,6 @@ class ApiFlowProcessorStrategyImplTest {
             ));
         }
 
-        /**
-         * Verifies that only the request transformation is applied when no response
-         * transformation is configured.
-         */
         @Test
         void shouldApplyOnlyRequestTransformation_whenResponseTransformationIsNull() {
             ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
@@ -299,7 +297,7 @@ class ApiFlowProcessorStrategyImplTest {
                     FlowDirection.IN,
                     "ap12345",
                     "sub123",
-                    List.of("ap12345", "sub123"),
+                    List.of("ap12345"),
                     requestTransformations,
                     null
             );
@@ -313,10 +311,6 @@ class ApiFlowProcessorStrategyImplTest {
             verify(forwardFlowPort).forwardFlow(flow);
         }
 
-        /**
-         * Verifies that only the response transformation is applied when no request
-         * transformation is configured.
-         */
         @Test
         void shouldApplyOnlyResponseTransformation_whenRequestTransformationIsNull() {
             ApiFlowConfigurationResponse responseTransformations = ApiFlowConfigurationResponse.builder()
@@ -327,7 +321,7 @@ class ApiFlowProcessorStrategyImplTest {
                     FlowDirection.IN,
                     "ap12345",
                     "sub123",
-                    List.of("ap12345", "sub123"),
+                    List.of("ap12345"),
                     null,
                     responseTransformations
             );
@@ -341,17 +335,13 @@ class ApiFlowProcessorStrategyImplTest {
             ));
         }
 
-        /**
-         * Verifies that the strategy only forwards the flow when no request
-         * or response transformations are configured.
-         */
         @Test
         void shouldOnlyForward_whenNoTransformationsAreConfigured() {
             ApiFlow flow = flow(
                     FlowDirection.IN,
                     "ap12345",
                     "sub123",
-                    List.of("ap12345", "sub123"),
+                    List.of("ap12345"),
                     null,
                     null
             );
@@ -364,11 +354,6 @@ class ApiFlowProcessorStrategyImplTest {
         }
     }
 
-    /**
-     * Provides malformed configuration inputs for authorization validation.
-     *
-     * @return cases where {@code authorizedCodeAp} is missing or empty
-     */
     static Stream<Arguments> malformedAuthorizedCodeApCases() {
         return Stream.of(
                 Arguments.of((Object) null),
@@ -376,24 +361,6 @@ class ApiFlowProcessorStrategyImplTest {
         );
     }
 
-    /**
-     * Creates a reusable {@link ApiFlow} fixture for strategy tests.
-     *
-     * <p>This helper builds a coherent flow graph containing:
-     * <ul>
-     *     <li>a token context</li>
-     *     <li>a request carrying that token context</li>
-     *     <li>a flow configuration with direction, authorized sources, and optional transformations</li>
-     * </ul>
-     *
-     * @param direction flow direction under test
-     * @param issuer token issuer
-     * @param subject token subject
-     * @param authorizedCodeAp configured authorized sources
-     * @param requestTransformations optional request transformation config
-     * @param responseTransformations optional response transformation config
-     * @return fully initialized flow fixture
-     */
     private static ApiFlow flow(FlowDirection direction,
                                 String issuer,
                                 String subject,
@@ -426,307 +393,6 @@ class ApiFlowProcessorStrategyImplTest {
                 .build();
     }
 }
-
-```
-```
-
-/**
- * Unit tests for {@link EstreemApiGatewayAdapter}.
- *
- * <p>This test suite validates the observable behavior of the adapter:
- * <ul>
- *     <li>accepting valid token contexts</li>
- *     <li>rejecting invalid token contexts</li>
- *     <li>mapping null request payloads to empty strings</li>
- *     <li>mapping null response payloads to empty strings</li>
- *     <li>delegating valid flows to the downstream use case</li>
- * </ul>
- *
- * <p>The goal is to verify the adapter contract, not the internal implementation
- * details of downstream services.
- */
-class EstreemApiGatewayAdapterTest {
-
-    private FromPartnerToBnppUseCase fromPartnerToBnppUseCase;
-    private EstreemApiGatewayAdapter adapter;
-
-    /**
-     * Initializes the adapter under test with a mocked downstream use case.
-     */
-    @BeforeEach
-    void setUp() {
-        fromPartnerToBnppUseCase = mock(FromPartnerToBnppUseCase.class);
-        adapter = new EstreemApiGatewayAdapter(fromPartnerToBnppUseCase);
-    }
-
-    /**
-     * Verifies that the adapter accepts a token when:
-     * <ul>
-     *     <li>ISS is valid</li>
-     *     <li>SUB is present and valid</li>
-     * </ul>
-     *
-     * <p>Also verifies that the adapter delegates the flow to the pipeline
-     * and returns the pipeline response as-is.
-     */
-    @Test
-    void adapter_shouldProcessRequest_whenTokenIsValid_andSubjectIsPresent() {
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpHeaders headers = new HttpHeaders();
-
-        when(request.getMethod()).thenReturn("GET");
-        when(request.getRequestURI()).thenReturn("/bcef/v1/api/flow123/resource");
-        when(request.getQueryString()).thenReturn("a=1");
-
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer("ap12345")
-                .subject("sub_123")
-                .build();
-
-        // Simulate a successful pipeline execution and a valid downstream response.
-        mockSuccessfulPipeline(200, "{\"ok\":true}");
-
-        try (MockedStatic<JwtTokenUtil> jwtMock = mockStatic(JwtTokenUtil.class)) {
-            jwtMock.when(() -> JwtTokenUtil.getTokenContext(request)).thenReturn(tokenContext);
-
-            ResponseEntity<String> response = adapter.adapter("flow123", request, "body", headers);
-
-            assertEquals(200, response.getStatusCode().value());
-            assertEquals("{\"ok\":true}", response.getBody());
-            verify(fromPartnerToBnppUseCase, times(1)).doPipeline(any(ApiFlow.class));
-        }
-    }
-
-    /**
-     * Verifies that the adapter accepts a token when:
-     * <ul>
-     *     <li>ISS is valid</li>
-     *     <li>SUB is null</li>
-     * </ul>
-     *
-     * <p>This documents the current validation rule that SUB is optional.
-     */
-    @Test
-    void adapter_shouldProcessRequest_whenTokenIsValid_andSubjectIsNull() {
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpHeaders headers = new HttpHeaders();
-
-        when(request.getMethod()).thenReturn("POST");
-        when(request.getRequestURI()).thenReturn("/bcef/v1/api/flow123/resource");
-        when(request.getQueryString()).thenReturn(null);
-
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer("ap12345")
-                .subject(null)
-                .build();
-
-        mockSuccessfulPipeline(200, "{\"ok\":true}");
-
-        try (MockedStatic<JwtTokenUtil> jwtMock = mockStatic(JwtTokenUtil.class)) {
-            jwtMock.when(() -> JwtTokenUtil.getTokenContext(request)).thenReturn(tokenContext);
-
-            ResponseEntity<String> response = adapter.adapter("flow123", request, "body", headers);
-
-            assertEquals(200, response.getStatusCode().value());
-            assertEquals("{\"ok\":true}", response.getBody());
-            verify(fromPartnerToBnppUseCase, times(1)).doPipeline(any(ApiFlow.class));
-        }
-    }
-
-    /**
-     * Verifies that a null request body is normalized by the adapter into an
-     * empty payload before the flow is sent to the pipeline.
-     */
-    @Test
-    void adapter_shouldSendEmptyRequestPayload_whenBodyIsNull() {
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpHeaders headers = new HttpHeaders();
-
-        when(request.getMethod()).thenReturn("PUT");
-        when(request.getRequestURI()).thenReturn("/bcef/v1/api/flow123/resource");
-        when(request.getQueryString()).thenReturn("a=1");
-
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer("ap12345")
-                .subject("sub123")
-                .build();
-
-        doAnswer(invocation -> {
-            ApiFlow apiFlow = invocation.getArgument(0);
-
-            // The adapter should normalize a null body to an empty String.
-            assertEquals("", apiFlow.getRequest().getRequestPayload());
-
-            apiFlow.setResponse(
-                    ApiFlowResponse.builder()
-                            .statusCode(200)
-                            .responseHeaders(Map.of("Content-Type", List.of("application/json")))
-                            .responsePayload("{\"ok\":true}")
-                            .build()
-            );
-            return null;
-        }).when(fromPartnerToBnppUseCase).doPipeline(any(ApiFlow.class));
-
-        try (MockedStatic<JwtTokenUtil> jwtMock = mockStatic(JwtTokenUtil.class)) {
-            jwtMock.when(() -> JwtTokenUtil.getTokenContext(request)).thenReturn(tokenContext);
-
-            ResponseEntity<String> response = adapter.adapter("flow123", request, null, headers);
-
-            assertEquals(200, response.getStatusCode().value());
-            assertEquals("{\"ok\":true}", response.getBody());
-            verify(fromPartnerToBnppUseCase, times(1)).doPipeline(any(ApiFlow.class));
-        }
-    }
-
-    /**
-     * Verifies that a null downstream response payload is normalized by the adapter
-     * into an empty response body.
-     */
-    @Test
-    void adapter_shouldReturnEmptyResponseBody_whenPipelineResponsePayloadIsEmpty() {
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpHeaders headers = new HttpHeaders();
-
-        when(request.getMethod()).thenReturn("GET");
-        when(request.getRequestURI()).thenReturn("/bcef/v1/api/flow123/resource");
-        when(request.getQueryString()).thenReturn("a=1");
-
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer("ap12345")
-                .subject("sub123")
-                .build();
-
-        // Simulate a downstream response with no payload.
-        mockSuccessfulPipeline(204, null);
-
-        try (MockedStatic<JwtTokenUtil> jwtMock = mockStatic(JwtTokenUtil.class)) {
-            jwtMock.when(() -> JwtTokenUtil.getTokenContext(request)).thenReturn(tokenContext);
-
-            ResponseEntity<String> response = adapter.adapter("flow123", request, "body", headers);
-
-            assertEquals(204, response.getStatusCode().value());
-            assertEquals("", response.getBody());
-            verify(fromPartnerToBnppUseCase, times(1)).doPipeline(any(ApiFlow.class));
-        }
-    }
-
-    /**
-     * Verifies that invalid token contexts are rejected before the pipeline is invoked.
-     *
-     * @param ignoredCaseName readable label for the parameterized scenario
-     * @param tokenContext token context under test
-     */
-    @ParameterizedTest(name = "{index} => {0}")
-    @MethodSource("invalidTokenContexts")
-    void adapter_shouldThrowException_whenTokenIsInvalid(String ignoredCaseName, TokenContext tokenContext) {
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpHeaders headers = new HttpHeaders();
-
-        try (MockedStatic<JwtTokenUtil> jwtMock = mockStatic(JwtTokenUtil.class)) {
-            jwtMock.when(() -> JwtTokenUtil.getTokenContext(request)).thenReturn(tokenContext);
-
-            GilFlowException exception = assertThrows(
-                    GilFlowException.class,
-                    () -> adapter.adapter("flow123", request, "body", headers)
-            );
-
-            assertEquals(GilErrorCode.INVALID_TOKEN, exception.getCode());
-            verify(fromPartnerToBnppUseCase, never()).doPipeline(any());
-        }
-    }
-
-    /**
-     * Provides invalid token context scenarios for parameterized validation tests.
-     *
-     * <p>The invalid cases cover:
-     * <ul>
-     *     <li>missing issuer</li>
-     *     <li>issuer too short</li>
-     *     <li>issuer too long</li>
-     *     <li>issuer containing forbidden characters</li>
-     *     <li>subject too short</li>
-     *     <li>subject too long</li>
-     *     <li>subject containing forbidden characters</li>
-     * </ul>
-     *
-     * @return stream of invalid token scenarios
-     */
-    private static Stream<Arguments> invalidTokenContexts() {
-        return Stream.of(
-                Arguments.of(
-                        "issuer is null",
-                        TokenContext.builder()
-                                .issuer(null)
-                                .subject("sub123")
-                                .build()
-                ),
-                Arguments.of(
-                        "issuer is invalid because too short",
-                        TokenContext.builder()
-                                .issuer("ab")
-                                .subject("sub123")
-                                .build()
-                ),
-                Arguments.of(
-                        "issuer is invalid because too long",
-                        TokenContext.builder()
-                                .issuer("abcdefghijklmnop")
-                                .subject("sub123")
-                                .build()
-                ),
-                Arguments.of(
-                        "issuer is invalid because contains forbidden character",
-                        TokenContext.builder()
-                                .issuer("ap@123")
-                                .subject("sub123")
-                                .build()
-                ),
-                Arguments.of(
-                        "subject is invalid because too short",
-                        TokenContext.builder()
-                                .issuer("ap12345")
-                                .subject("ab")
-                                .build()
-                ),
-                Arguments.of(
-                        "subject is invalid because too long",
-                        TokenContext.builder()
-                                .issuer("ap12345")
-                                .subject("abcdefghijklmnop")
-                                .build()
-                ),
-                Arguments.of(
-                        "subject is invalid because contains forbidden character",
-                        TokenContext.builder()
-                                .issuer("ap12345")
-                                .subject("sub#123")
-                                .build()
-                )
-        );
-    }
-
-    /**
-     * Stubs the downstream use case so that it mutates the {@link ApiFlow}
-     * with a successful response.
-     *
-     * @param statusCode simulated HTTP status returned by the pipeline
-     * @param responsePayload simulated downstream payload
-     */
-    private void mockSuccessfulPipeline(int statusCode, String responsePayload) {
-        doAnswer(invocation -> {
-            ApiFlow apiFlow = invocation.getArgument(0);
-            apiFlow.setResponse(
-                    ApiFlowResponse.builder()
-                            .statusCode(statusCode)
-                            .responseHeaders(Map.of("Content-Type", List.of("application/json")))
-                            .responsePayload(responsePayload)
-                            .build()
-            );
-            return null;
-        }).when(fromPartnerToBnppUseCase).doPipeline(any(ApiFlow.class));
-    }
-}
-
 ```
 MR / PR summary
 
