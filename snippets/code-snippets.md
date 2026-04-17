@@ -1,940 +1,877 @@
 ```
 
-/**
-     * Validates whether the given API flow is authorized to be processed
-     * based on its configuration and token context.
-     *
-     * <p>The authorization logic is defined as follows:
-     *
-     * <ul>
-     *     <li>If {@code authorizedCodeAp} contains the special value {@code "all"},
-     *     the flow is always authorized regardless of direction, issuer, or subject.</li>
-     *
-     *     <li><b>IN flow:</b>
-     *         <ul>
-     *             <li>The flow is authorized if the token {@code issuer} is present in
-     *             {@code authorizedCodeAp}.</li>
-     *             <li>The {@code subject} is not considered in this case.</li>
-     *         </ul>
-     *     </li>
-     *
-     *     <li><b>OUT flow:</b>
-     *         <ul>
-     *             <li>The flow is authorized if:
-     *                 <ul>
-     *                     <li>{@code issuer} is present in {@code authorizedCodeAp}, and</li>
-     *                     <li>{@code subject} is either {@code null} or also present in {@code authorizedCodeAp}.</li>
-     *                 </ul>
-     *             </li>
-     *         </ul>
-     *     </li>
-     * </ul>
-     *
-     * <p>If none of these conditions are met, the flow is rejected and a
-     * {@link GilCoreException} with code {@link GilErrorCode#AUTHENTICATION_TOKEN_FAILED} is thrown.
-     *
-     * @param flow the API flow being processed, containing direction and token context
-     * @param apiFlowConfiguration the flow configuration containing authorized sources
-     *
-     * @throws GilCoreException if the flow is not authorized
-     */
+@Slf4j
+@Named
+@RequiredArgsConstructor
+public class EnrichEventContentHeaderTransformationService {
+
+    private static final String EVENT_TECH_ID_HEADER_KEY = "eventtechid";
+    private static final String X_REQUEST_ID_HEADER_KEY = "x-request-id";
+    private static final String ITR_ID_HEADER_KEY = "itrId";
+
+    private static final String AP_CODE = "A100789";
+    private static final String EVENT_NORM_VERSION = "2.4.1";
+    private static final String EVENT_TYPE_VERSION = "1.0.0";
+    private static final String ZONE_ID = ZoneId.of("Europe/Paris").getId();
+
+    private static final String DEFAULT_ITR_ID = "ITRId_eventType_to_determine";
+    private static final String DEFAULT_EVENT_TYPE_OE_ID = "OEId_eventType_to_determine";
+    private static final String DEFAULT_MAIN_BUSINESS_OBJECT_OE_ID = "OEId_for_each_event";
+
+    private static final DateTimeUtil DATE_TIME_UTIL = new DateTimeUtil();
+
+    public void enrichEventContentHeader(EventFlowTransformationCtx transformationCtx) {
+        EventContent eventContent = transformationCtx.getEventContent();
+        EventContentHeader header = eventContent.getHeader();
+        Map<String, List<String>> headers = transformationCtx.getHeaders();
+
+        String mainBusinessObjectId = getMainBusinessObjectId(headers);
+        String itrId = getItrId(headers);
+
+        enrichTechnicalHeader(header, headers, transformationCtx.getReceivedEventTimestamp());
+        enrichFunctionalHeader(header, itrId, mainBusinessObjectId);
+    }
+
+    private void enrichTechnicalHeader(
+            EventContentHeader header,
+            Map<String, List<String>> headers,
+            long receivedEventTimestamp
+    ) {
+        TechnicalHeaderDef technical = header.getTechnical();
+        technical.setEventTechId(resolveEventTechId(headers));
+        technical.setEventNormVersion(EVENT_NORM_VERSION);
+        technical.setTimestamp(DATE_TIME_UTIL.convertEpochToIso8601(receivedEventTimestamp));
+        technical.setTimeZone(ZONE_ID);
+        technical.setApCode(AP_CODE);
+    }
+
+    private void enrichFunctionalHeader(
+            EventContentHeader header,
+            String itrId,
+            String mainBusinessObjectId
+    ) {
+        FunctionalHeaderDef functional = header.getFunctional();
+        functional.setEventType(buildEventType(itrId));
+        functional.setMainBusinessObject(buildMainBusinessObject(itrId, mainBusinessObjectId));
+        functional.setSecondaryBusinessObjects(new ArrayList<>());
+    }
+
+    private String getMainBusinessObjectId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, X_REQUEST_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    log.warn("{} is empty", X_REQUEST_ID_HEADER_KEY);
+                    return "";
+                });
+    }
+
+    private String getItrId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, ITR_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    log.warn("ItrId not present in headers");
+                    return DEFAULT_ITR_ID;
+                });
+    }
+
+    private String resolveEventTechId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, EVENT_TECH_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    String generatedEventTechId = UUID.randomUUID().toString();
+                    log.warn(
+                            "eventTechId not present in headers, generating eventTechId [{}]",
+                            generatedEventTechId
+                    );
+                    return generatedEventTechId;
+                });
+    }
+
+    private Optional<String> getFirstHeaderValue(Map<String, List<String>> headers, String key) {
+        List<String> values = headers.get(key);
+        if (values == null || values.isEmpty() || values.getFirst() == null || values.getFirst().isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(values.getFirst());
+    }
+
+    private EventTypeDef buildEventType(String itrId) {
+        EventTypeDef eventTypeDef = new EventTypeDef();
+        eventTypeDef.setEventTypeId(TypeIdDef.builder()
+                .OEId(DEFAULT_EVENT_TYPE_OE_ID)
+                .ITRId(itrId)
+                .build());
+        eventTypeDef.setEventTypeVersion(EVENT_TYPE_VERSION);
+        return eventTypeDef;
+    }
+
+    private MainBusinessObjectDef buildMainBusinessObject(String itrId, String mainBusinessObjectId) {
+        MainBusinessObjectDef mainBusinessObjectDef = new MainBusinessObjectDef();
+        mainBusinessObjectDef.setId(mainBusinessObjectId);
+        mainBusinessObjectDef.setType(TypeIdDef.builder()
+                .ITRId(itrId)
+                .OEId(DEFAULT_MAIN_BUSINESS_OBJECT_OE_ID)
+                .build());
+        return mainBusinessObjectDef;
+    }
+}
+```
+
+```
+class EnrichEventContentHeaderTransformationServiceTest {
+
+    private static final long RECEIVED_TIMESTAMP = 1713350400000L;
+
+    private static final String EVENT_TECH_ID_HEADER_KEY = "eventtechid";
+    private static final String X_REQUEST_ID_HEADER_KEY = "x-request-id";
+    private static final String ITR_ID_HEADER_KEY = "itrId";
+
+    private static final String EVENT_TECH_ID = "event-tech-123";
+    private static final String MAIN_BUSSINESS_OBJECT_ID = "main-bo-456";
+    private static final String ITR_ID = "itr-789";
+
+    private static final String DEFAULT_ITR_ID = "ITRId_eventType_to_determine";
+    private static final String EVENT_NORM_VERSION = "2.4.1";
+    private static final String EVENT_TYPE_VERSION = "1.0.0";
+    private static final String AP_CODE = "A100789";
+    private static final String TIME_ZONE = "Europe/Paris";
+
+    private EnrichEventContentHeaderTransformationService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new EnrichEventContentHeaderTransformationService();
+    }
+
+    @Nested
+    class NominalCase {
+
+        @Test
+        void should_enrich_all_headers_when_all_input_headers_are_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            EventContentHeader header = ctx.getEventContent().getHeader();
+
+            assertTechnicalHeader(header);
+            assertFunctionalHeader(header, ITR_ID, MAIN_BUSSINESS_OBJECT_ID);
+            assertThat(header.getTechnical().getEventTechId()).isEqualTo(EVENT_TECH_ID);
+        }
+    }
+
+    @Nested
+    class EventTechId {
+
+        @Test
+        void should_use_header_eventTechId_when_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getTechnical().getEventTechId())
+                    .isEqualTo(EVENT_TECH_ID);
+        }
+
+        @Test
+        void should_generate_eventTechId_when_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            String generatedEventTechId = ctx.getEventContent().getHeader().getTechnical().getEventTechId();
+
+            assertThat(generatedEventTechId).isNotBlank();
+            assertThatCode(() -> UUID.fromString(generatedEventTechId)).doesNotThrowAnyException();
+        }
+
+        @Test
+        void should_generate_eventTechId_when_header_value_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            String generatedEventTechId = ctx.getEventContent().getHeader().getTechnical().getEventTechId();
+
+            assertThat(generatedEventTechId).isNotBlank();
+            assertThatCode(() -> UUID.fromString(generatedEventTechId)).doesNotThrowAnyException();
+        }
+    }
+
+    @Nested
+    class MainBusinessObjectId {
+
+        @Test
+        void should_set_mainBusinessObjectId_from_xRequestId_header() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEqualTo(MAIN_BUSSINESS_OBJECT_ID);
+        }
+
+        @Test
+        void should_set_empty_mainBusinessObjectId_when_xRequestId_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEmpty();
+        }
+
+        @Test
+        void should_set_empty_mainBusinessObjectId_when_xRequestId_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEmpty();
+        }
+    }
+
+    @Nested
+    class ItrId {
+
+        @Test
+        void should_set_itrId_from_header_when_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            EventContentHeader header = ctx.getEventContent().getHeader();
+
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId()).isEqualTo(ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId()).isEqualTo(ITR_ID);
+        }
+
+        @Test
+        void should_use_default_itrId_when_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            EventContentHeader header = ctx.getEventContent().getHeader();
+
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+        }
+
+        @Test
+        void should_use_default_itrId_when_header_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of()
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            EventContentHeader header = ctx.getEventContent().getHeader();
+
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+        }
+    }
+
+    @Test
+    void should_always_set_static_technical_and_functional_values() {
+        EventFlowTransformationCtx ctx = buildContext(Map.of());
+
+        service.enrichEventContentHeader(ctx);
+
+        EventContentHeader header = ctx.getEventContent().getHeader();
+
+        assertThat(header.getTechnical().getEventNormVersion()).isEqualTo(EVENT_NORM_VERSION);
+        assertThat(header.getTechnical().getTimeZone()).isEqualTo(TIME_ZONE);
+        assertThat(header.getTechnical().getApCode()).isEqualTo(AP_CODE);
+
+        assertThat(header.getFunctional().getEventType().getEventTypeVersion()).isEqualTo(EVENT_TYPE_VERSION);
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getOEId())
+                .isEqualTo("OEId_eventType_to_determine");
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getOEId())
+                .isEqualTo("OEId_for_each_event");
+        assertThat(header.getFunctional().getSecondaryBusinessObjects()).isNotNull().isEmpty();
+    }
+
+    private void assertTechnicalHeader(EventContentHeader header) {
+        assertThat(header.getTechnical()).isNotNull();
+        assertThat(header.getTechnical().getEventNormVersion()).isEqualTo(EVENT_NORM_VERSION);
+        assertThat(header.getTechnical().getTimeZone()).isEqualTo(TIME_ZONE);
+        assertThat(header.getTechnical().getApCode()).isEqualTo(AP_CODE);
+        assertThat(header.getTechnical().getTimestamp()).isNotBlank();
+    }
+
+    private void assertFunctionalHeader(EventContentHeader header, String expectedItrId, String expectedMainBusinessObjectId) {
+        assertThat(header.getFunctional()).isNotNull();
+
+        assertThat(header.getFunctional().getEventType()).isNotNull();
+        assertThat(header.getFunctional().getEventType().getEventTypeVersion()).isEqualTo(EVENT_TYPE_VERSION);
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getOEId())
+                .isEqualTo("OEId_eventType_to_determine");
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                .isEqualTo(expectedItrId);
+
+        assertThat(header.getFunctional().getMainBusinessObject()).isNotNull();
+        assertThat(header.getFunctional().getMainBusinessObject().getId()).isEqualTo(expectedMainBusinessObjectId);
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getOEId())
+                .isEqualTo("OEId_for_each_event");
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                .isEqualTo(expectedItrId);
+
+        assertThat(header.getFunctional().getSecondaryBusinessObjects()).isNotNull().isEmpty();
+    }
+
+    private EventFlowTransformationCtx buildContext(Map<String, List<String>> headers) {
+        EventFlowTransformationCtx ctx = new EventFlowTransformationCtx();
+        ctx.setHeaders(headers);
+        ctx.setReceivedEventTimestamp(RECEIVED_TIMESTAMP);
+        ctx.setEventContent(buildEventContent());
+        return ctx;
+    }
+
+    private EventContent buildEventContent() {
+        EventContent eventContent = new EventContent();
+
+        EventContentHeader header = new EventContentHeader();
+        header.setTechnical(new TechnicalHeaderDef());
+        header.setFunctional(new FunctionalHeaderDef());
+
+        eventContent.setHeader(header);
+        return eventContent;
+    }
+}
+
 ```
 
 ```
 @Slf4j
+@Named
 @RequiredArgsConstructor
-public class ApiFlowProcessorStrategyImpl implements FlowProcessorStrategy<ApiFlow> {
+public class EnrichEventContentHeaderTransformationService {
 
-    private final ApplyTransformationPort applyTransformationPort;
+    private static final String EVENT_TECH_ID_HEADER_KEY = "eventtechid";
+    private static final String X_REQUEST_ID_HEADER_KEY = "x-request-id";
+    private static final String ITR_ID_HEADER_KEY = "itrId";
+    private static final String X_EVENT_VERSION_HEADER_KEY = "x-event-version";
 
-    @Override
-    public void doProcessFlow(ApiFlow flow,
-                              ForwardFlowPort forwardFlowPort) {
-        ApiFlowConfiguration apiFlowConfiguration = flow.getConfiguration();
-        FlowDirection direction = flow.getFlowConfiguration().getDirection();
-        checkIsAuthorized(flow, apiFlowConfiguration);
+    private static final String AP_CODE = "A100789";
+    private static final String EVENT_NORM_VERSION = "2.4.1";
+    private static final String EVENT_TYPE_VERSION = "1.0.0";
+    private static final String ZONE_ID = ZoneId.of("Europe/Paris").getId();
 
-        ApiFlowConfigurationRequest apiFlowConfigurationRequest = apiFlowConfiguration.getRequestTransformations();
-        if (apiFlowConfiguration.getRequestTransformations() != null) {
-            ApiFlowRequestTransformationCtx apiFlowRequestTransformationCtx = ApiFlowRequestTransformationCtx.builder()
-                    .apiFlowRequest(flow.getRequest())
-                    .alias(apiFlowConfigurationRequest.getAlias())
-                    .direction(direction)
-                    .build();
-            this.applyTransformationPort.applyTransformation(apiFlowRequestTransformationCtx);
-        }
+    private static final String DEFAULT_ITR_ID = "ITRId_eventType_to_determine";
+    private static final String DEFAULT_EVENT_TYPE_OE_ID = "OEId_eventType_to_determine";
+    private static final String DEFAULT_MAIN_BUSINESS_OBJECT_OE_ID = "OEId_for_each_event";
 
-        forwardFlowPort.forwardFlow(flow);
+    private static final DateTimeUtil DATE_TIME_UTIL = new DateTimeUtil();
 
-        ApiFlowConfigurationResponse apiFlowConfigurationResponse = apiFlowConfiguration.getResponseTransformations();
-        if (apiFlowConfigurationResponse != null) {
-            ApiFlowResponseTransformationCtx apiFlowResponseTransformationCtx = ApiFlowResponseTransformationCtx.builder()
-                    .apiFlowResponse(flow.getResponse())
-                    .alias(apiFlowConfigurationResponse.getAlias())
-                    .direction(direction)
-                    .build();
-            this.applyTransformationPort.applyTransformation(apiFlowResponseTransformationCtx);
-        }
+    public void enrichEventContentHeader(EventFlowTransformationCtx transformationCtx) {
+        EventContent eventContent = transformationCtx.getEventContent();
+        EventContentHeader header = eventContent.getHeader();
+        Map<String, List<String>> headers = transformationCtx.getHeaders();
+
+        String mainBusinessObjectId = getMainBusinessObjectId(headers);
+        String itrId = getItrId(headers);
+        String eventVersion = getEventVersion(headers);
+
+        enrichTechnicalHeader(header, headers, transformationCtx.getReceivedEventTimestamp());
+        enrichFunctionalHeader(header, itrId, mainBusinessObjectId, eventVersion);
     }
 
-    private void checkIsAuthorized(ApiFlow flow, ApiFlowConfiguration apiFlowConfiguration) {
-        List<String> authorizedCodeAp = apiFlowConfiguration.getAuthorizedCodeAp();
-        TokenContext tokenContext = flow.getRequest().getTokenContext();
+    private void enrichTechnicalHeader(
+            EventContentHeader header,
+            Map<String, List<String>> headers,
+            long receivedEventTimestamp
+    ) {
+        TechnicalHeaderDef technical = header.getTechnical();
+        technical.setEventTechId(resolveEventTechId(headers));
+        technical.setEventNormVersion(EVENT_NORM_VERSION);
+        technical.setTimestamp(DATE_TIME_UTIL.convertEpochToIso8601(receivedEventTimestamp));
+        technical.setTimeZone(ZONE_ID);
+        technical.setApCode(AP_CODE);
+    }
 
-        String issuer = tokenContext.issuer();
-        String subject = tokenContext.subject();
+    private void enrichFunctionalHeader(
+            EventContentHeader header,
+            String itrId,
+            String mainBusinessObjectId,
+            String eventVersion
+    ) {
+        FunctionalHeaderDef functional = header.getFunctional();
+        functional.setEventType(buildEventType(itrId, eventVersion));
+        functional.setMainBusinessObject(buildMainBusinessObject(itrId, mainBusinessObjectId));
+        functional.setSecondaryBusinessObjects(new ArrayList<>());
+    }
 
-        boolean authorizedForAll = authorizedCodeAp.contains("all");
-        if (authorizedForAll) {
-            return;
+    private String getMainBusinessObjectId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, X_REQUEST_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    log.warn("{} is empty", X_REQUEST_ID_HEADER_KEY);
+                    return "";
+                });
+    }
+
+    private String getItrId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, ITR_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    log.warn("ItrId not present in headers");
+                    return DEFAULT_ITR_ID;
+                });
+    }
+
+    private String getEventVersion(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, X_EVENT_VERSION_HEADER_KEY)
+                .orElseGet(() -> {
+                    log.warn("{} not present in headers, using default value [{}]",
+                            X_EVENT_VERSION_HEADER_KEY, EVENT_TYPE_VERSION);
+                    return EVENT_TYPE_VERSION;
+                });
+    }
+
+    private String resolveEventTechId(Map<String, List<String>> headers) {
+        return getFirstHeaderValue(headers, EVENT_TECH_ID_HEADER_KEY)
+                .orElseGet(() -> {
+                    String generatedEventTechId = UUID.randomUUID().toString();
+                    log.warn(
+                            "eventTechId not present in headers, generating eventTechId [{}]",
+                            generatedEventTechId
+                    );
+                    return generatedEventTechId;
+                });
+    }
+
+    private Optional<String> getFirstHeaderValue(Map<String, List<String>> headers, String key) {
+        List<String> values = headers.get(key);
+        if (values == null || values.isEmpty() || values.getFirst() == null || values.getFirst().isBlank()) {
+            return Optional.empty();
         }
+        return Optional.of(values.getFirst());
+    }
 
-        boolean authorizedIn = flow.getFlowDirection() == FlowDirection.IN
-                && authorizedCodeAp.contains(issuer);
-        if (authorizedIn) {
-            return;
-        }
+    private EventTypeDef buildEventType(String itrId, String eventVersion) {
+        EventTypeDef eventTypeDef = new EventTypeDef();
+        eventTypeDef.setEventTypeId(TypeIdDef.builder()
+                .OEId(DEFAULT_EVENT_TYPE_OE_ID)
+                .ITRId(itrId)
+                .build());
+        eventTypeDef.setEventTypeVersion(eventVersion);
+        return eventTypeDef;
+    }
 
-        boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
-                && (authorizedCodeAp.contains(issuer)
-                && (subject == null || authorizedCodeAp.contains(subject)));
-        if (authorizedOut) {
-            return;
-        }
-
-        throw new GilCoreException(
-                GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
-                "la liste de sources dans la configuration du flow et la source du flow (" + issuer + ", " + subject + ") ne correspondent pas."
-        );
+    private MainBusinessObjectDef buildMainBusinessObject(String itrId, String mainBusinessObjectId) {
+        MainBusinessObjectDef mainBusinessObjectDef = new MainBusinessObjectDef();
+        mainBusinessObjectDef.setId(mainBusinessObjectId);
+        mainBusinessObjectDef.setType(TypeIdDef.builder()
+                .ITRId(itrId)
+                .OEId(DEFAULT_MAIN_BUSINESS_OBJECT_OE_ID)
+                .build());
+        return mainBusinessObjectDef;
     }
 }
-```
 
 ```
-/**
- * Unit tests for {@link ApiFlowProcessorStrategyImpl}.
- *
- * <p>This suite validates the orchestration responsibilities of the strategy:
- * <ul>
- *     <li>authorization checks before any processing</li>
- *     <li>request transformation triggering</li>
- *     <li>flow forwarding</li>
- *     <li>response transformation triggering</li>
- *     <li>execution order across these steps</li>
- * </ul>
- */
-class ApiFlowProcessorStrategyImplTest {
 
-    private ApplyTransformationPort applyTransformationPort;
-    private ForwardFlowPort forwardFlowPort;
-    private ApiFlowProcessorStrategyImpl strategy;
+
+```
+class EnrichEventContentHeaderTransformationServiceTest {
+
+    private static final long RECEIVED_TIMESTAMP = 1713350400000L;
+
+    private static final String EVENT_TECH_ID_HEADER_KEY = "eventtechid";
+    private static final String X_REQUEST_ID_HEADER_KEY = "x-request-id";
+    private static final String X_EVENT_VERSION_HEADER_KEY = "x-event-version";
+    private static final String EVENT_VERSION = "2.3.4";
+    private static final String ITR_ID_HEADER_KEY = "itrId";
+
+    private static final String EVENT_TECH_ID = "event-tech-123";
+    private static final String MAIN_BUSSINESS_OBJECT_ID = "main-bo-456";
+    private static final String ITR_ID = "itr-789";
+
+    private static final String DEFAULT_ITR_ID = "ITRId_eventType_to_determine";
+    private static final String EVENT_NORM_VERSION = "2.4.1";
+    private static final String EVENT_TYPE_VERSION = "1.0.0";
+    private static final String AP_CODE = "A100789";
+    private static final String TIME_ZONE = "Europe/Paris";
+
+    private EnrichEventContentHeaderTransformationService service;
 
     @BeforeEach
     void setUp() {
-        applyTransformationPort = mock(ApplyTransformationPort.class);
-        forwardFlowPort = mock(ForwardFlowPort.class);
-        strategy = new ApiFlowProcessorStrategyImpl(applyTransformationPort);
+        service = new EnrichEventContentHeaderTransformationService();
     }
 
     @Nested
-    class AuthorizationFailures {
+    class NominalCase {
 
-        /**
-         * Verifies that unauthorized flows are rejected before any transformation
-         * or forwarding is attempted.
-         */
-        @ParameterizedTest(name = "{index} - auth failure: {0}")
-        @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#unauthorizedFlowCases")
-        void shouldThrowAuthenticationTokenFailed_whenFlowIsNotAuthorized(String ignoredCaseName,
-                                                                          ApiFlow flow) {
-            GilCoreException exception = assertThrows(
-                    GilCoreException.class,
-                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
+        @Test
+        void should_enrich_all_headers_when_all_input_headers_are_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID),
+                            X_EVENT_VERSION_HEADER_KEY, List.of(EVENT_VERSION)
+                    )
             );
 
-            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-            verifyNoInteractions(applyTransformationPort);
-            verifyNoInteractions(forwardFlowPort);
-        }
-    }
+            service.enrichEventContentHeader(ctx);
 
-    @Nested
-    class AuthorizationSuccessCases {
+            EventContentHeader header = ctx.getEventContent().getHeader();
 
-        /**
-         * Verifies successful authorization scenarios for API flows.
-         *
-         * <p>Covered cases:
-         * <ul>
-         *     <li>"all" authorizes any flow</li>
-         *     <li>IN flow authorized by issuer only</li>
-         *     <li>IN flow authorized by issuer with null subject</li>
-         *     <li>OUT flow authorized by issuer + subject</li>
-         *     <li>OUT flow authorized by issuer with null subject</li>
-         * </ul>
-         */
-        @ParameterizedTest(name = "{index} - {0}")
-        @MethodSource("com.example.ApiFlowProcessorStrategyImplTest#authorizedFlowCases")
-        void shouldProcessFlow_whenAuthorizationSucceeds(String ignoredCaseName, ApiFlow flow) {
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
+            assertTechnicalHeader(header);
+            assertFunctionalHeader(header, ITR_ID, MAIN_BUSSINESS_OBJECT_ID, EVENT_VERSION);
+            assertThat(header.getTechnical().getEventTechId()).isEqualTo(EVENT_TECH_ID);
         }
     }
 
     @Nested
-    class TransformationBehavior {
+    class EventTechId {
 
         @Test
-        void shouldApplyRequestTransformationThenForwardThenApplyResponseTransformation() {
-            ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/req").build()))
-                    .build();
-
-            ApiFlowConfigurationResponse responseTransformations = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/res").build()))
-                    .build();
-
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    requestTransformations,
-                    responseTransformations
+        void should_use_header_eventTechId_when_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-
-            inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowRequestTransformationCtx requestCtx
-                            && requestCtx.getApiFlowRequest().equals(flow.getRequest())
-                            && requestCtx.getAlias().equals(requestTransformations.getAlias())
-                            && requestCtx.getDirection() == FlowDirection.IN
-            ));
-
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-
-            inOrder.verify(applyTransformationPort).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowResponseTransformationCtx responseCtx
-                            && responseCtx.getApiFlowResponse().equals(flow.getResponse())
-                            && responseCtx.getAlias().equals(responseTransformations.getAlias())
-                            && responseCtx.getDirection() == FlowDirection.IN
-            ));
+            assertThat(ctx.getEventContent().getHeader().getTechnical().getEventTechId())
+                    .isEqualTo(EVENT_TECH_ID);
         }
 
         @Test
-        void shouldApplyOnlyRequestTransformation_whenResponseTransformationIsNull() {
-            ApiFlowConfigurationRequest requestTransformations = ApiFlowConfigurationRequest.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/req").build()))
-                    .build();
-
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    requestTransformations,
-                    null
+        void should_generate_eventTechId_when_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
-            flow.setResponse(ApiFlowResponse.builder().build());
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            verify(applyTransformationPort, times(1)).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowRequestTransformationCtx
-            ));
-            verify(forwardFlowPort).forwardFlow(flow);
+            String generatedEventTechId = ctx.getEventContent().getHeader().getTechnical().getEventTechId();
+
+            assertThat(generatedEventTechId).isNotBlank();
+            assertThatCode(() -> UUID.fromString(generatedEventTechId)).doesNotThrowAnyException();
         }
 
         @Test
-        void shouldApplyOnlyResponseTransformation_whenRequestTransformationIsNull() {
-            ApiFlowConfigurationResponse responseTransformations = ApiFlowConfigurationResponse.builder()
-                    .alias(List.of(AliasingTransformationConfiguration.builder().pointer("/res").build()))
-                    .build();
-
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    null,
-                    responseTransformations
-            );
-            flow.setResponse(ApiFlowResponse.builder().build());
-
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            verify(forwardFlowPort).forwardFlow(flow);
-            verify(applyTransformationPort, times(1)).applyTransformation(argThat(ctx ->
-                    ctx instanceof ApiFlowResponseTransformationCtx
-            ));
-        }
-
-        @Test
-        void shouldOnlyForward_whenNoTransformationsAreConfigured() {
-            ApiFlow flow = flow(
-                    FlowDirection.IN,
-                    "ap12345",
-                    "sub123",
-                    List.of("ap12345"),
-                    null,
-                    null
-            );
-            flow.setResponse(ApiFlowResponse.builder().build());
-
-            strategy.doProcessFlow(flow, forwardFlowPort);
-
-            verify(forwardFlowPort).forwardFlow(flow);
-            verifyNoInteractions(applyTransformationPort);
-        }
-    }
-
-    static Stream<Arguments> unauthorizedFlowCases() {
-        return Stream.of(
-                Arguments.of(
-                        "IN flow with unauthorized issuer",
-                        flow(
-                                FlowDirection.IN,
-                                "ap99999",
-                                "sub123",
-                                List.of("ap12345", "ap67890"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "OUT flow with unauthorized issuer",
-                        flow(
-                                FlowDirection.OUT,
-                                "ap99999",
-                                "partner01",
-                                List.of("ap12345", "partner01"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "OUT flow with authorized issuer but unauthorized subject",
-                        flow(
-                                FlowDirection.OUT,
-                                "ap12345",
-                                "partner99",
-                                List.of("ap12345", "partner01", "partner02"),
-                                null,
-                                null
-                        )
-                )
-        );
-    }
-
-    /**
-     * Provides authorized API flow scenarios.
-     *
-     * @return successful authorization cases for both IN and OUT directions
-     */
-    static Stream<Arguments> authorizedFlowCases() {
-        return Stream.of(
-                Arguments.of(
-                        "authorized for all",
-                        flow(
-                                FlowDirection.IN,
-                                "unknownIssuer",
-                                "unknownSubject",
-                                List.of("all"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "IN flow with authorized issuer",
-                        flow(
-                                FlowDirection.IN,
-                                "ap12345",
-                                "sub999",
-                                List.of("ap12345"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "IN flow with authorized issuer and null subject",
-                        flow(
-                                FlowDirection.IN,
-                                "ap12345",
-                                null,
-                                List.of("ap12345"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "OUT flow with authorized issuer and subject",
-                        flow(
-                                FlowDirection.OUT,
-                                "ap12345",
-                                "partner01",
-                                List.of("ap12345", "partner01", "partner02"),
-                                null,
-                                null
-                        )
-                ),
-                Arguments.of(
-                        "OUT flow with authorized issuer and null subject",
-                        flow(
-                                FlowDirection.OUT,
-                                "ap12345",
-                                null,
-                                List.of("ap12345"),
-                                null,
-                                null
-                        )
-                )
-        );
-    }
-
-    private static ApiFlow flow(FlowDirection direction,
-                                String issuer,
-                                String subject,
-                                List<String> authorizedCodeAp,
-                                ApiFlowConfigurationRequest requestTransformations,
-                                ApiFlowConfigurationResponse responseTransformations) {
-
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer(issuer)
-                .subject(subject)
-                .build();
-
-        ApiFlowRequest request = ApiFlowRequest.builder()
-                .tokenContext(tokenContext)
-                .build();
-
-        ApiFlowConfiguration configuration = ApiFlowConfiguration.builder()
-                .flowId("flow123")
-                .direction(direction)
-                .authorizedCodeAp(authorizedCodeAp)
-                .requestTransformations(requestTransformations)
-                .responseTransformations(responseTransformations)
-                .build();
-
-        return ApiFlow.builder()
-                .flowId("flow123")
-                .flowDirection(direction)
-                .configuration(configuration)
-                .request(request)
-                .build();
-    }
-}
-
-```
-
-
-```
-@Slf4j
-@RequiredArgsConstructor
-public class EventFlowProcessorStrategyImpl implements FlowProcessorStrategy<EventFlow> {
-
-    private static final String ALL = "all";
-    private final ApplyTransformationPort applyTransformationPort;
-
-    @Override
-    public void doProcessFlow(EventFlow flow,
-                              ForwardFlowPort forwardFlowPort) {
-        EventFlowConfiguration flowConfiguration = flow.getFlowConfiguration();
-        EventFlowConfigurationTransformationConfiguration eventFlowConfigurationTransformationConfiguration = flowConfiguration.getTransformations();
-
-        checkIsAuthorized(flow, flowConfiguration);
-
-        EventFlowTransformationCtx eventFlowTransformationCtx = EventFlowTransformationCtx.builder()
-                .alias(eventFlowConfigurationTransformationConfiguration.getAlias())
-                .eventFlowConfigurationHeaders(eventFlowConfigurationTransformationConfiguration.getHeaders())
-                .eventPayload(flow.getPayload())
-                .headers(flow.getHeaders())
-                .receivedEventTimestamp(flow.getReceivedEventTimestamp())
-                .build();
-        this.applyTransformationPort.applyTransformation(eventFlowTransformationCtx);
-        flow.setPayload(eventFlowTransformationCtx.getEventPayload());
-
-        forwardFlowPort.forwardFlow(flow);
-    }
-
-    /**
-     * Validates whether the given event flow is authorized to be processed
-     * based on its configuration and token context.
-     *
-     * <p>The authorization logic follows these rules:
-     *
-     * <ul>
-     *     <li>If the list contains the special value {@code "all"}, the flow is always authorized
-     *     regardless of direction, issuer, or subject.</li>
-     *
-     *     <li><b>Event flows are only supported in {@link FlowDirection#OUT} direction.</b>
-     *         <ul>
-     *             <li>If the flow direction is {@code IN} and {@code "all"} is not configured,
-     *             the flow is rejected.</li>
-     *         </ul>
-     *     </li>
-     *
-     *     <li><b>OUT flow:</b>
-     *         <ul>
-     *             <li>The flow is authorized if:
-     *                 <ul>
-     *                     <li>{@code issuer} is present in {@code authorizedCodeAp}, and</li>
-     *                     <li>{@code subject} is either {@code null} or also present in {@code authorizedCodeAp}.</li>
-     *                 </ul>
-     *             </li>
-     *         </ul>
-     *     </li>
-     * </ul>
-     *
-     * <p>If none of the above conditions are met, the flow is rejected and a
-     * {@link GilCoreException} with code {@link GilErrorCode#AUTHENTICATION_TOKEN_FAILED} is thrown.
-     *
-     * @param flow the event flow being processed, containing direction and token context
-     * @param flowConfiguration the flow configuration containing authorized sources
-     *
-     * @throws GilCoreException if the flow is not authorized
-     */
-    private void checkIsAuthorized(EventFlow flow, EventFlowConfiguration flowConfiguration) {
-        List<String> authorizedCodeAp = flowConfiguration.getAuthorizedCodeAp();
-        TokenContext tokenContext = flow.getTokenContext();
-
-        String issuer = tokenContext.issuer();
-        String subject = tokenContext.subject();
-
-        boolean authorizedForAll = authorizedCodeAp.contains(ALL);
-        if (authorizedForAll) {
-            return;
-        }
-
-        boolean authorizedOut = flow.getFlowDirection() == FlowDirection.OUT
-                && (authorizedCodeAp.contains(issuer)
-                && (subject == null || authorizedCodeAp.contains(subject)));
-        if (authorizedOut) {
-            return;
-        }
-
-        throw new GilCoreException(
-                GilErrorCode.AUTHENTICATION_TOKEN_FAILED,
-                "la liste de sources dans la configuration du flow et la source du flow (" + issuer + ", " + subject + ") ne correspondent pas."
-        );
-    }
-}
-
-```
-
-
-```
-
-/**
- * Unit tests for {@link EventFlowProcessorStrategyImpl}.
- *
- * <p>This suite validates:
- * <ul>
- *     <li>authorization rules for event flows</li>
- *     <li>transformation context construction</li>
- *     <li>payload update after transformation</li>
- *     <li>forwarding behavior and execution order</li>
- *     <li>fail-fast behavior when authorization fails</li>
- * </ul>
- *
- * <p>For event flows, the authorization rule is:
- * <ul>
- *     <li>"all" always authorizes</li>
- *     <li>otherwise only {@link FlowDirection#OUT} is authorized</li>
- *     <li>for OUT, issuer must be authorized</li>
- *     <li>for OUT, subject may be null, otherwise it must be authorized too</li>
- * </ul>
- */
-class EventFlowProcessorStrategyImplTest {
-
-    private static final String FLOW_ID = "flow123";
-    private static final String VALID_ISSUER = "ap12345";
-    private static final String VALID_SUBJECT = "sub123";
-    private static final String INITIAL_PAYLOAD = "initial-payload";
-    private static final String TRANSFORMED_PAYLOAD = "transformed-payload";
-    private static final long RECEIVED_EVENT_TIMESTAMP = 123456789L;
-
-    private ApplyTransformationPort applyTransformationPort;
-    private ForwardFlowPort forwardFlowPort;
-    private EventFlowProcessorStrategyImpl strategy;
-
-    @BeforeEach
-    void setUp() {
-        applyTransformationPort = mock(ApplyTransformationPort.class);
-        forwardFlowPort = mock(ForwardFlowPort.class);
-        strategy = new EventFlowProcessorStrategyImpl(applyTransformationPort);
-    }
-
-    @Nested
-    class AuthorizationFailures {
-
-        /**
-         * Verifies that IN event flows are rejected when "all" is not configured.
-         */
-        @Test
-        void shouldThrowAuthenticationTokenFailed_whenDirectionIsIn() {
-            EventFlow flow = flow(
-                    FlowDirection.IN,
-                    VALID_ISSUER,
-                    VALID_SUBJECT,
-                    List.of(VALID_ISSUER, VALID_SUBJECT),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_generate_eventTechId_when_header_value_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
 
-            GilCoreException exception = assertThrows(
-                    GilCoreException.class,
-                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
-            );
+            service.enrichEventContentHeader(ctx);
 
-            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-            verifyNoInteractions(applyTransformationPort);
-            verifyNoInteractions(forwardFlowPort);
-        }
+            String generatedEventTechId = ctx.getEventContent().getHeader().getTechnical().getEventTechId();
 
-        /**
-         * Verifies that an OUT flow is rejected when the issuer is not authorized.
-         */
-        @Test
-        void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsNotAuthorized() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    "ap99999",
-                    "partner01",
-                    List.of(VALID_ISSUER, "partner01"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
-            );
-
-            GilCoreException exception = assertThrows(
-                    GilCoreException.class,
-                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
-            );
-
-            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-            verifyNoInteractions(applyTransformationPort);
-            verifyNoInteractions(forwardFlowPort);
-        }
-
-        /**
-         * Verifies that an OUT flow is rejected when the issuer is authorized
-         * but the non-null subject is not authorized.
-         */
-        @Test
-        void shouldThrowAuthenticationTokenFailed_whenOutFlowIssuerIsAuthorizedButSubjectIsNotAuthorized() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    "partner99",
-                    List.of(VALID_ISSUER, "partner01", "partner02"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
-            );
-
-            GilCoreException exception = assertThrows(
-                    GilCoreException.class,
-                    () -> strategy.doProcessFlow(flow, forwardFlowPort)
-            );
-
-            assertEquals(GilErrorCode.AUTHENTICATION_TOKEN_FAILED, exception.getCode());
-            verifyNoInteractions(applyTransformationPort);
-            verifyNoInteractions(forwardFlowPort);
+            assertThat(generatedEventTechId).isNotBlank();
+            assertThatCode(() -> UUID.fromString(generatedEventTechId)).doesNotThrowAnyException();
         }
     }
 
     @Nested
-    class AuthorizationSuccessCases {
+    class MainBusinessObjectId {
 
-        /**
-         * Verifies that the special source "all" authorizes the flow regardless
-         * of direction or token values.
-         */
         @Test
-        void shouldProcessFlow_whenAuthorizedForAll_evenIfDirectionIsIn() {
-            EventFlow flow = flow(
-                    FlowDirection.IN,
-                    "unknownIssuer",
-                    "unknownSubject",
-                    List.of("all"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_set_mainBusinessObjectId_from_xRequestId_header() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
-            verify(forwardFlowPort, times(1)).forwardFlow(flow);
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEqualTo(MAIN_BUSSINESS_OBJECT_ID);
         }
 
-        /**
-         * Verifies that an OUT flow is authorized when both issuer and subject
-         * are present in the authorized list.
-         */
         @Test
-        void shouldProcessFlow_whenOutFlowIssuerAndSubjectAreAuthorized() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    "partner01",
-                    List.of(VALID_ISSUER, "partner01", "partner02"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_set_empty_mainBusinessObjectId_when_xRequestId_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
-            verify(forwardFlowPort, times(1)).forwardFlow(flow);
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEmpty();
         }
 
-        /**
-         * Verifies that an OUT flow is authorized when the issuer is authorized
-         * and the subject is null.
-         */
         @Test
-        void shouldProcessFlow_whenOutFlowIssuerIsAuthorizedAndSubjectIsNull() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    null,
-                    List.of(VALID_ISSUER),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_set_empty_mainBusinessObjectId_when_xRequestId_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            verify(applyTransformationPort, times(1)).applyTransformation(any(EventFlowTransformationCtx.class));
-            verify(forwardFlowPort, times(1)).forwardFlow(flow);
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getMainBusinessObject().getId())
+                    .isEmpty();
         }
     }
 
     @Nested
-    class TransformationBehavior {
+    class ItrId {
 
-        /**
-         * Verifies the full happy path:
-         * transformation is applied, payload is updated, then the flow is forwarded.
-         */
         @Test
-        void shouldApplyTransformationUpdatePayloadAndForward() {
-            EventFlowConfigurationTransformationConfiguration transformationConfiguration = transformationConfiguration();
-
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    VALID_SUBJECT,
-                    List.of(VALID_ISSUER, VALID_SUBJECT),
-                    transformationConfiguration,
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_set_itrId_from_header_when_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
             );
 
-            doAnswer(invocation -> {
-                EventFlowTransformationCtx ctx = invocation.getArgument(0);
-                ctx.setEventPayload(TRANSFORMED_PAYLOAD);
-                return null;
-            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            service.enrichEventContentHeader(ctx);
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            EventContentHeader header = ctx.getEventContent().getHeader();
 
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-
-            assertEquals(TRANSFORMED_PAYLOAD, flow.getPayload());
-            verifyNoMoreInteractions(applyTransformationPort, forwardFlowPort);
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId()).isEqualTo(ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId()).isEqualTo(ITR_ID);
         }
 
-        /**
-         * Verifies the exact transformation context values built by the strategy.
-         */
         @Test
-        void shouldBuildTransformationContextWithExpectedValues() {
-            EventFlowConfigurationHeaders configuredHeaders = EventFlowConfigurationHeaders.builder()
-                    .mainBusinessObjectId("id-path")
-                    .mainBusinessObjectType("type-path")
-                    .bankCode("bank-path")
-                    .build();
-
-            EventFlowConfigurationTransformationConfiguration transformationConfiguration =
-                    EventFlowConfigurationTransformationConfiguration.builder()
-                            .headers(configuredHeaders)
-                            .alias(List.of(
-                                    AliasingTransformationConfiguration.builder()
-                                            .pointer("alias-path")
-                                            .build()
-                            ))
-                            .build();
-
-            Map<String, List<String>> headers = Map.of("event-type", List.of("customer-created"));
-
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    "partner01",
-                    List.of(VALID_ISSUER, "partner01"),
-                    transformationConfiguration,
-                    "event-payload",
-                    headers,
-                    999L
+        void should_use_default_itrId_when_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID)
+                    )
             );
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            service.enrichEventContentHeader(ctx);
 
-            ArgumentCaptor<EventFlowTransformationCtx> captor =
-                    ArgumentCaptor.forClass(EventFlowTransformationCtx.class);
+            EventContentHeader header = ctx.getEventContent().getHeader();
 
-            verify(applyTransformationPort).applyTransformation(captor.capture());
-
-            EventFlowTransformationCtx ctx = captor.getValue();
-            assertEquals(transformationConfiguration.getAlias(), ctx.getAlias());
-            assertEquals(configuredHeaders, ctx.getEventFlowConfigurationHeaders());
-            assertEquals("event-payload", ctx.getEventPayload());
-            assertEquals(headers, ctx.getHeaders());
-            assertEquals(999L, ctx.getReceivedEventTimestamp());
-
-            assertEquals("event-payload", flow.getPayload());
-            verify(forwardFlowPort).forwardFlow(flow);
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
         }
 
-        /**
-         * Verifies that the transformed payload is copied back into the flow
-         * before forwarding.
-         */
         @Test
-        void shouldWriteBackTransformedPayloadToFlowBeforeForwarding() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    "partner01",
-                    List.of(VALID_ISSUER, "partner01"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    Map.of(),
-                    42L
+        void should_use_default_itrId_when_header_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of()
+                    )
             );
 
-            doAnswer(invocation -> {
-                EventFlowTransformationCtx ctx = invocation.getArgument(0);
-                ctx.setEventPayload("updated-by-transformation");
-                return null;
-            }).when(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
+            service.enrichEventContentHeader(ctx);
 
-            strategy.doProcessFlow(flow, forwardFlowPort);
+            EventContentHeader header = ctx.getEventContent().getHeader();
 
-            InOrder inOrder = inOrder(applyTransformationPort, forwardFlowPort);
-            inOrder.verify(applyTransformationPort).applyTransformation(any(EventFlowTransformationCtx.class));
-            inOrder.verify(forwardFlowPort).forwardFlow(flow);
-
-            assertEquals("updated-by-transformation", flow.getPayload());
+            assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
+            assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                    .isEqualTo(DEFAULT_ITR_ID);
         }
     }
 
     @Nested
-    class FailFastBehavior {
+    class EventVersion {
 
-        /**
-         * Verifies that authorization failure stops processing immediately:
-         * no transformation, no payload update, and no forwarding.
-         */
         @Test
-        void shouldNotTransformUpdatePayloadOrForward_whenAuthorizationFails() {
-            EventFlow flow = flow(
-                    FlowDirection.OUT,
-                    VALID_ISSUER,
-                    "forbidden-subject",
-                    List.of(VALID_ISSUER, "allowed-subject"),
-                    transformationConfiguration(),
-                    INITIAL_PAYLOAD,
-                    defaultHeaders(),
-                    RECEIVED_EVENT_TIMESTAMP
+        void should_set_eventTypeVersion_from_header_when_present() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID),
+                            X_EVENT_VERSION_HEADER_KEY, List.of(EVENT_VERSION)
+                    )
             );
 
-            assertThrows(GilCoreException.class, () -> strategy.doProcessFlow(flow, forwardFlowPort));
+            service.enrichEventContentHeader(ctx);
 
-            verifyNoInteractions(applyTransformationPort, forwardFlowPort);
-            assertEquals(INITIAL_PAYLOAD, flow.getPayload());
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getEventType().getEventTypeVersion())
+                    .isEqualTo(EVENT_VERSION);
+        }
+
+        @Test
+        void should_use_default_eventTypeVersion_when_header_is_missing() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID)
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getEventType().getEventTypeVersion())
+                    .isEqualTo(EVENT_TYPE_VERSION);
+        }
+
+        @Test
+        void should_use_default_eventTypeVersion_when_header_list_is_empty() {
+            EventFlowTransformationCtx ctx = buildContext(
+                    Map.of(
+                            EVENT_TECH_ID_HEADER_KEY, List.of(EVENT_TECH_ID),
+                            X_REQUEST_ID_HEADER_KEY, List.of(MAIN_BUSSINESS_OBJECT_ID),
+                            ITR_ID_HEADER_KEY, List.of(ITR_ID),
+                            X_EVENT_VERSION_HEADER_KEY, List.of()
+                    )
+            );
+
+            service.enrichEventContentHeader(ctx);
+
+            assertThat(ctx.getEventContent().getHeader().getFunctional().getEventType().getEventTypeVersion())
+                    .isEqualTo(EVENT_TYPE_VERSION);
         }
     }
 
-    /**
-     * Creates a minimal valid transformation configuration for tests that do not
-     * need to focus on exact transformation setup values.
-     */
-    private static EventFlowConfigurationTransformationConfiguration transformationConfiguration() {
-        return EventFlowConfigurationTransformationConfiguration.builder()
-                .headers(EventFlowConfigurationHeaders.builder()
-                        .mainBusinessObjectId("id-path")
-                        .mainBusinessObjectType("type-path")
-                        .bankCode("bank-path")
-                        .build())
-                .alias(List.of(
-                        AliasingTransformationConfiguration.builder()
-                                .pointer("alias-path")
-                                .build()
-                ))
-                .build();
+    @Test
+    void should_always_set_static_technical_and_functional_values() {
+        EventFlowTransformationCtx ctx = buildContext(Map.of());
+
+        service.enrichEventContentHeader(ctx);
+
+        EventContentHeader header = ctx.getEventContent().getHeader();
+
+        assertThat(header.getTechnical().getEventNormVersion()).isEqualTo(EVENT_NORM_VERSION);
+        assertThat(header.getTechnical().getTimeZone()).isEqualTo(TIME_ZONE);
+        assertThat(header.getTechnical().getApCode()).isEqualTo(AP_CODE);
+
+        assertThat(header.getFunctional().getEventType().getEventTypeVersion()).isEqualTo(EVENT_TYPE_VERSION);
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getOEId())
+                .isEqualTo("OEId_eventType_to_determine");
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getOEId())
+                .isEqualTo("OEId_for_each_event");
+        assertThat(header.getFunctional().getSecondaryBusinessObjects()).isNotNull().isEmpty();
     }
 
-    /**
-     * Creates default event headers used by several tests.
-     */
-    private static Map<String, List<String>> defaultHeaders() {
-        return Map.of("x-header", List.of("value"));
+    private void assertTechnicalHeader(EventContentHeader header) {
+        assertThat(header.getTechnical()).isNotNull();
+        assertThat(header.getTechnical().getEventNormVersion()).isEqualTo(EVENT_NORM_VERSION);
+        assertThat(header.getTechnical().getTimeZone()).isEqualTo(TIME_ZONE);
+        assertThat(header.getTechnical().getApCode()).isEqualTo(AP_CODE);
+        assertThat(header.getTechnical().getTimestamp()).isNotBlank();
     }
 
-    /**
-     * Creates a coherent {@link EventFlow} fixture for strategy tests.
-     */
-    private static EventFlow flow(FlowDirection direction,
-                                  String issuer,
-                                  String subject,
-                                  List<String> authorizedCodeAp,
-                                  EventFlowConfigurationTransformationConfiguration transformations,
-                                  String payload,
-                                  Map<String, List<String>> headers,
-                                  long receivedEventTimestamp) {
+    private void assertFunctionalHeader(
+            EventContentHeader header,
+            String expectedItrId,
+            String expectedMainBusinessObjectId,
+            String expectedEventVersion
+    ) {
+        assertThat(header.getFunctional()).isNotNull();
 
-        TokenContext tokenContext = TokenContext.builder()
-                .issuer(issuer)
-                .subject(subject)
-                .build();
+        assertThat(header.getFunctional().getEventType()).isNotNull();
+        assertThat(header.getFunctional().getEventType().getEventTypeVersion()).isEqualTo(expectedEventVersion);
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getOEId())
+                .isEqualTo("OEId_eventType_to_determine");
+        assertThat(header.getFunctional().getEventType().getEventTypeId().getITRId())
+                .isEqualTo(expectedItrId);
 
-        EventFlowConfiguration configuration = EventFlowConfiguration.builder()
-                .flowId(FLOW_ID)
-                .direction(direction)
-                .authorizedCodeAp(authorizedCodeAp)
-                .transformations(transformations)
-                .build();
+        assertThat(header.getFunctional().getMainBusinessObject()).isNotNull();
+        assertThat(header.getFunctional().getMainBusinessObject().getId()).isEqualTo(expectedMainBusinessObjectId);
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getOEId())
+                .isEqualTo("OEId_for_each_event");
+        assertThat(header.getFunctional().getMainBusinessObject().getType().getITRId())
+                .isEqualTo(expectedItrId);
 
-        return EventFlow.builder()
-                .flowId(FLOW_ID)
-                .flowDirection(direction)
-                .configuration(configuration)
-                .tokenContext(tokenContext)
-                .payload(payload)
-                .headers(headers)
-                .receivedEventTimestamp(receivedEventTimestamp)
-                .build();
+        assertThat(header.getFunctional().getSecondaryBusinessObjects()).isNotNull().isEmpty();
+    }
+
+    private EventFlowTransformationCtx buildContext(Map<String, List<String>> headers) {
+        EventFlowTransformationCtx ctx = new EventFlowTransformationCtx();
+        ctx.setHeaders(headers);
+        ctx.setReceivedEventTimestamp(RECEIVED_TIMESTAMP);
+        ctx.setEventContent(buildEventContent());
+        return ctx;
+    }
+
+    private EventContent buildEventContent() {
+        EventContent eventContent = new EventContent();
+
+        EventContentHeader header = new EventContentHeader();
+        header.setTechnical(new TechnicalHeaderDef());
+        header.setFunctional(new FunctionalHeaderDef());
+
+        eventContent.setHeader(header);
+        return eventContent;
     }
 }
 ```

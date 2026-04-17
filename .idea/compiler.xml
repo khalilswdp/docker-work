@@ -8,6 +8,7 @@
         <outputRelativeToContentRoot value="true" />
         <module name="demo" />
         <module name="kafka-avro-json" />
+        <module name="kafka-mix" />
       </profile>
     </annotationProcessing>
   </component>
