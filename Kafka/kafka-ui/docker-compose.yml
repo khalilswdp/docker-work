@@ -1,0 +1,210 @@
+networks:
+  kafka-net:
+    name: kafka-net
+
+services:
+  broker1:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: broker1
+    hostname: broker1
+    networks:
+      - kafka-net
+    ports:
+      - "19093:19093"
+    volumes:
+      - ./secrets:/etc/kafka/secrets:ro
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker1:19092,2@broker2:19092,3@broker3:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:19092,SASL_SSL://0.0.0.0:19093
+      KAFKA_ADVERTISED_LISTENERS: SASL_SSL://broker1:19093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SASL_SSL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: SASL_SSL
+
+      KAFKA_SSL_KEYSTORE_FILENAME: broker01.keystore.jks
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: broker_keystore_creds
+      KAFKA_SSL_KEY_CREDENTIALS: broker_key_creds
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: truststore_creds
+      KAFKA_SSL_CLIENT_AUTH: required
+
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_LISTENER_NAME_SASL_SSL_PLAIN_SASL_JAAS_CONFIG: >
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="broker"
+        password="broker-secret"
+        user_token="local-token"
+        user_broker="broker-secret";
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf
+
+  broker2:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: broker2
+    hostname: broker2
+    networks:
+      - kafka-net
+    ports:
+      - "29093:19093"
+    volumes:
+      - ./secrets:/etc/kafka/secrets:ro
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker1:19092,2@broker2:19092,3@broker3:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:19092,SASL_SSL://0.0.0.0:19093
+      KAFKA_ADVERTISED_LISTENERS: SASL_SSL://broker2:19093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SASL_SSL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: SASL_SSL
+
+      KAFKA_SSL_KEYSTORE_FILENAME: broker02.keystore.jks
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: broker_keystore_creds
+      KAFKA_SSL_KEY_CREDENTIALS: broker_key_creds
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: truststore_creds
+      KAFKA_SSL_CLIENT_AUTH: required
+
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_LISTENER_NAME_SASL_SSL_PLAIN_SASL_JAAS_CONFIG: >
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="broker"
+        password="broker-secret"
+        user_token="local-token"
+        user_broker="broker-secret";
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf
+
+  broker3:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: broker3
+    hostname: broker3
+    networks:
+      - kafka-net
+    ports:
+      - "39093:19093"
+    volumes:
+      - ./secrets:/etc/kafka/secrets:ro
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker1:19092,2@broker2:19092,3@broker3:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:19092,SASL_SSL://0.0.0.0:19093
+      KAFKA_ADVERTISED_LISTENERS: SASL_SSL://broker3:19093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SASL_SSL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: SASL_SSL
+
+      KAFKA_SSL_KEYSTORE_FILENAME: broker03.keystore.jks
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: broker_keystore_creds
+      KAFKA_SSL_KEY_CREDENTIALS: broker_key_creds
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: truststore_creds
+      KAFKA_SSL_CLIENT_AUTH: required
+
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_LISTENER_NAME_SASL_SSL_PLAIN_SASL_JAAS_CONFIG: >
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="broker"
+        password="broker-secret"
+        user_token="local-token"
+        user_broker="broker-secret";
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.0
+    container_name: schema-registry
+    hostname: schema-registry
+    restart: unless-stopped
+    networks:
+      - kafka-net
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./certs:/certs:ro
+      - ./schema-registry-users.properties:/etc/schema-registry/schema-registry-users.properties:ro
+      - ./schema-registry.jaas.conf:/etc/schema-registry/jaas.conf:ro
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: "schema-registry"
+      SCHEMA_REGISTRY_LISTENERS: "https://0.0.0.0:8085"
+      SCHEMA_REGISTRY_INTER_INSTANCE_PROTOCOL: "https"
+
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: "_schemas"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: "3"
+      SCHEMA_REGISTRY_KAFKASTORE_INIT_TIMEOUT_MS: "120000"
+
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "broker1:19093,broker2:19093,broker3:19093"
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: "SASL_SSL"
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_MECHANISM: "PLAIN"
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="token" password="local-token";'
+
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_LOCATION: "/certs/kafka.truststore.jks"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_PASSWORD: "truststore-password"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_TYPE: "JKS"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEYSTORE_LOCATION: "/certs/schema-registry.keystore.jks"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEYSTORE_PASSWORD: "changeit"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEYSTORE_TYPE: "JKS"
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_KEY_PASSWORD: "changeit"
+
+      SCHEMA_REGISTRY_SSL_KEYSTORE_LOCATION: "/certs/schema-registry.keystore.jks"
+      SCHEMA_REGISTRY_SSL_KEYSTORE_PASSWORD: "changeit"
+      SCHEMA_REGISTRY_SSL_KEYSTORE_TYPE: "JKS"
+      SCHEMA_REGISTRY_SSL_KEY_PASSWORD: "changeit"
+      SCHEMA_REGISTRY_SSL_TRUSTSTORE_LOCATION: "/certs/kafka.truststore.jks"
+      SCHEMA_REGISTRY_SSL_TRUSTSTORE_PASSWORD: "truststore-password"
+      SCHEMA_REGISTRY_SSL_TRUSTSTORE_TYPE: "JKS"
+
+      SCHEMA_REGISTRY_AUTHENTICATION_METHOD: "BASIC"
+      SCHEMA_REGISTRY_AUTHENTICATION_REALM: "SchemaRegistry-Props"
+      SCHEMA_REGISTRY_AUTHENTICATION_ROLES: "sr-user,sr-admin"
+      SCHEMA_REGISTRY_OPTS: "-Djava.security.auth.login.config=/etc/schema-registry/jaas.conf"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    hostname: kafka-ui
+    networks:
+      - kafka-net
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - schema-registry
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./kafka-ui/application.yml:/etc/kafkaui/application.yml:ro
+      - ./certs:/certs:ro
+    environment:
+      SPRING_CONFIG_ADDITIONAL_LOCATION: "/etc/kafkaui/application.yml"
