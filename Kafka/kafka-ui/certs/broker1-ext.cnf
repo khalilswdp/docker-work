@@ -1,4 +1,0 @@
-basicConstraints=CA:FALSE
-keyUsage=digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth,clientAuth
-subjectAltName=DNS:broker1,DNS:localhost,IP:127.0.0.1

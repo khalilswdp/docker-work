@@ -1,0 +1,9 @@
+topics:
+  - name: com.example.events.CustomerCreated
+    recordName: com.example.events.CustomerCreated
+    partitions: 3
+    replicationFactor: 3
+  - name: com.example.events.OrderCreated
+    recordName: com.example.events.OrderCreated
+    partitions: 3
+    replicationFactor: 3
