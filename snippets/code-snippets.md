@@ -1,18 +1,21 @@
 ```
+#!/usr/bin/env bash
+set -euo pipefail
 
-modules:
-  kafka-ui:
-    image: kafka-ui
-    tag: "v0.7.2"
-    release_name: kafka-ui
-    registry: p-5141-docker-local
-    labels:
-      - all
-      - back
-      - kafka
-      - ui
+SOURCE_IMAGE="provectuslabs/kafka-ui:v0.7.2"
+TARGET_IMAGE="p-5141-docker-local/kafka-ui:v0.7.2"
 
-        
+echo "Pulling source image..."
+docker pull "$SOURCE_IMAGE"
+
+echo "Tagging image..."
+docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+echo "Pushing target image..."
+docker push "$TARGET_IMAGE"
+
+echo "Done: $TARGET_IMAGE"
+
 ```
 MR / PR summary
 
